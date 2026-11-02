@@ -688,6 +688,44 @@ void KinovaComm::setJointVelocities(const AngularInfo &joint_vel)
     }
 }
 
+/**
+ * @brief Joint velocity control with a finger position target in the same trajectory point.
+ * This function sends trajectory point(ANGULAR_VELOCITY) that will be added in the robotical arm's FIFO. sendAdvanceTrajectory() is called in api to complete the motion.
+ * @param joint_vel_deg_s joint velocity in degree/second
+ * @param fingers_turns finger positions to reach at the same time as moving, in turns (0...6800)
+ */
+void KinovaComm::setJointVelocitiesWithFingerPositions(const AngularInfo &joint_vel_deg_s,
+                                                       const FingerAngles &fingers_turns)
+{
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+
+    if (isStopped())
+    {
+        RCLCPP_INFO(logger(), "The joint velocities could not be set because the arm is stopped");
+        return;
+    }
+
+    TrajectoryPoint kinova_velocity;
+    kinova_velocity.InitStruct();
+
+    memset(&kinova_velocity, 0, sizeof(kinova_velocity));  // zero structure
+
+    kinova_velocity.Position.Type = ANGULAR_VELOCITY;
+
+    // confusingly, velocity is passed in the position struct
+    kinova_velocity.Position.Actuators = joint_vel_deg_s;
+
+    // Fill fingers
+    kinova_velocity.Position.Fingers = fingers_turns;
+    kinova_velocity.Position.HandMode = POSITION_MODE;
+
+    int result = kinova_api_.sendAdvanceTrajectory(kinova_velocity);
+    if (result != NO_ERROR_KINOVA)
+    {
+        throw KinovaCommException("Could not send advanced joint velocity trajectory", result);
+    }
+}
+
 void KinovaComm::setJointTorques(float joint_torque[])
 {
     std::lock_guard<std::recursive_mutex> lock(api_mutex_);

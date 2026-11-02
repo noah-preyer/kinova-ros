@@ -125,9 +125,9 @@ int KinovaAPI::initializeKinovaAPIFunctions(KinovaAPIType connection_type,
     //not working with Ethernet API
     //getDeviceCount = (int (*)(int &))initCommLayerFunction("GetDeviceCount");
 
-    getDevices = (int (*)(KinovaDevice[MAX_KINOVA_DEVICE], int &))initCommandLayerFunction("GetDevices");
+    getDevices = (int (*)(::KinovaDevice[MAX_KINOVA_DEVICE], int &))initCommandLayerFunction("GetDevices");
 
-    setActiveDevice = (int (*)(KinovaDevice))initCommandLayerFunction("SetActiveDevice");
+    setActiveDevice = (int (*)(::KinovaDevice))initCommandLayerFunction("SetActiveDevice");
 
     refresDevicesList = (int (*)())initCommandLayerFunction("RefresDevicesList");
 

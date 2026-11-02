@@ -23,6 +23,7 @@ find_package(ament_index_cpp REQUIRED)
 
 # Wrappers around the Kinova vendor API. No ROS 1 dependencies.
 add_library(kinova_driver_core SHARED
+  src/fake_kinova_device.cpp
   src/kinova_api.cpp
   src/kinova_comm.cpp
   src/kinova_ros_types.cpp
@@ -53,9 +54,12 @@ install(TARGETS kinova_driver_core
 # Only the headers that compile without ROS 1 are installed. The remaining headers in
 # include/kinova_driver belong to code that has not been ported yet.
 install(FILES
+  include/kinova_driver/conversions.hpp
+  include/kinova_driver/fake_kinova_device.hpp
   include/kinova_driver/kinova_api.h
   include/kinova_driver/kinova_comm.h
   include/kinova_driver/kinova_comm_config.hpp
+  include/kinova_driver/kinova_device.hpp
   include/kinova_driver/kinova_ros_types.h
   DESTINATION include/kinova_driver
 )
@@ -89,6 +93,12 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_kinova_ros_types test/test_kinova_ros_types.cpp)
   target_link_libraries(test_kinova_ros_types kinova_driver_core)
+
+  ament_add_gtest(test_conversions test/test_conversions.cpp)
+  target_link_libraries(test_conversions kinova_driver_core)
+
+  ament_add_gtest(test_fake_kinova_device test/test_fake_kinova_device.cpp)
+  target_link_libraries(test_fake_kinova_device kinova_driver_core)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

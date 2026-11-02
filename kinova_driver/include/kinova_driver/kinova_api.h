@@ -65,8 +65,8 @@ public:
     int (*getCodeVersion)(int[CODE_VERSION_COUNT]);
     int (*getAPIVersion)(int[API_VERSION_COUNT]);
     int (*getDeviceCount)(int &); // only api directly link to CommLayerUbuntu.so
-    int (*getDevices)(KinovaDevice[MAX_KINOVA_DEVICE], int &);
-    int (*setActiveDevice)(KinovaDevice);
+    int (*getDevices)(::KinovaDevice[MAX_KINOVA_DEVICE], int &);
+    int (*setActiveDevice)(::KinovaDevice);
     int (*refresDevicesList)(void);
     int (*getControlType)(int &);
     int (*getClientConfigurations)(ClientConfigurations &);

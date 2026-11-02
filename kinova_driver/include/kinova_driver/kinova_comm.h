@@ -55,26 +55,27 @@
 #include <kinova_driver/kinova_ros_types.h>
 #include "kinova_driver/kinova_api.h"
 #include "kinova_driver/kinova_comm_config.hpp"
+#include "kinova_driver/kinova_device.hpp"
 
 
 namespace kinova
 {
 
-class KinovaComm
+class KinovaComm : public KinovaDevice
 {
  public:
     //! \brief Connect to the arm described by config.
     //! \throws KinovaCommException on any failure. The API is closed again before throwing if it
     //!          had already been initialized.
     explicit KinovaComm(const KinovaCommConfig & config);
-    ~KinovaComm();
+    ~KinovaComm() override;
 
     // %Tag(general functions)
 
 
-    void stopAPI();
-    void startAPI();
-    bool isStopped();
+    void stopAPI() override;
+    void startAPI() override;
+    bool isStopped() override;
 
     int robotType() const;
     void getQuickStatus(QuickStatus &quick_status);
@@ -86,7 +87,7 @@ class KinovaComm
     void getSensorsInfo(SensorsInfo &sensor_Info); //voltage, current, temperatue and accelerometers
     void getForcesInfo(ForcesInfo &force_Info); // joint torque and end-effector wrench
     void getGripperStatus(Gripper &gripper_status); // most complete information of each fingers, including model, motion, force, limits, etc.
-    void homeArm(void);
+    void homeArm(void) override;
     bool isHomed(void);
     void initFingers(void);
     void setEndEffectorOffset(unsigned int status, float x, float y, float z);
@@ -97,15 +98,20 @@ class KinovaComm
 
     // %Tag(Angular Control)%
 
-    void setAngularControl();
+    void setAngularControl() override;
     void getAngularCommand(AngularPosition &angular_command);
-    void getJointAngles(KinovaAngles &angles);
+    void getJointAngles(KinovaAngles &angles) override;
     void setJointAngles(const KinovaAngles &angles, double speedJoint123 = 20,
                         double speedJoint4567 = 20, int timeout = 0, bool push = true);
-    void getJointVelocities(KinovaAngles &vels);
-    void setJointVelocities(const AngularInfo& joint_vel);    
+    void getJointVelocities(KinovaAngles &vels) override;
+    void setJointVelocities(const AngularInfo& joint_vel);
+    //! \brief Stream one angular-velocity point together with a finger position target.
+    //! \arg joint_vel_deg_s - joint velocities in deg/s
+    //! \arg fingers_turns - finger targets in turns (0...6800)
+    void setJointVelocitiesWithFingerPositions(const AngularInfo &joint_vel_deg_s,
+                                               const FingerAngles &fingers_turns) override;
     void getJointAccelerations(AngularAcceleration &joint_acc);
-    void getJointTorques(KinovaAngles &tqs);
+    void getJointTorques(KinovaAngles &tqs) override;
     void getJointCurrent(AngularPosition &anguler_current);    
     void printAngles(const KinovaAngles &angles);
 
@@ -154,11 +160,11 @@ class KinovaComm
 
     void getUserCommand(UserPosition &user_position);
     void getGlobalTrajectoryInfo(TrajectoryFIFO &trajectoryFIFO);
-    void eraseAllTrajectories(void);
+    void eraseAllTrajectories(void) override;
 
     int numFingers() const;
-    void getFingerPositions(FingerAngles &fingers);
-    void setFingerPositions(const FingerAngles &fingers, int timeout = 0, bool push = true);
+    void getFingerPositions(FingerAngles &fingers) override;
+    void setFingerPositions(const FingerAngles &fingers, int timeout = 0, bool push = true) override;
     void printFingers(const FingersPosition &fingers);   
 
     //Cartesian Admittance Control
@@ -191,7 +197,7 @@ class KinovaComm
     int num_joints_;
     int robot_type_;
     int motion_command_type_;
-    KinovaDevice devices_list_[MAX_KINOVA_DEVICE];
+    ::KinovaDevice devices_list_[MAX_KINOVA_DEVICE];  // vendor struct, not kinova::KinovaDevice
 };
 
 }  // namespace kinova
