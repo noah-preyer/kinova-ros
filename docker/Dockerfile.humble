@@ -1,0 +1,11 @@
+# Build/test image for the ROS 2 Humble port of kinova-ros.
+# The base image already ships ros2_control, ros2_controllers, MoveIt 2,
+# xacro, launch_testing and gtest; only the vendor USB runtime is added.
+FROM moveit/moveit2:humble-release
+
+# libusb-1.0 is needed at runtime by the vendor library USBCommLayerUbuntu.so
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libusb-1.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws
