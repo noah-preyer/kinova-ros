@@ -7,11 +7,30 @@
  */
 
 #include <kinova_driver/kinova_api.h>
+
+#include <rclcpp/logging.hpp>
+
+#include <cstring>
+#include <string>
 #include <vector>
 
 
 namespace kinova
 {
+
+namespace
+{
+rclcpp::Logger logger()
+{
+    return rclcpp::get_logger("kinova_api");
+}
+
+const char * dlErrorString()
+{
+    const char * error = dlerror();
+    return error != nullptr ? error : "unknown dlopen error";
+}
+}  // namespace
 
 void* KinovaAPI::initCommandLayerFunction(const char* name)
 {
@@ -23,7 +42,12 @@ void* KinovaAPI::initCommandLayerFunction(const char* name)
         strcat(functionName, name);
     }
     void * function_pointer = dlsym(API_command_lib_,functionName);
-    assert(function_pointer != NULL);
+    if (function_pointer == nullptr)
+    {
+        RCLCPP_ERROR(logger(), "Could not find symbol '%s' in the Kinova command layer library",
+                     functionName);
+        missing_symbols_++;
+    }
     return function_pointer;
 }
 
@@ -37,23 +61,37 @@ void* KinovaAPI::initCommLayerFunction(const char* name)
         strcat(functionName, name);
     }    
     void * function_pointer = dlsym(kinova_comm_lib_, name);
-    assert(function_pointer != NULL);
+    if (function_pointer == nullptr)
+    {
+        RCLCPP_ERROR(logger(), "Could not find symbol '%s' in the Kinova comm layer library", name);
+        missing_symbols_++;
+    }
     return function_pointer;
 }
 
 
-int KinovaAPI::initializeKinovaAPIFunctions(KinovaAPIType connection_type)
+int KinovaAPI::initializeKinovaAPIFunctions(KinovaAPIType connection_type,
+                                            const std::string & library_dir)
 {
     //try USB connection
     API_type_ = connection_type;
+    missing_symbols_ = 0;
 
+    const std::string prefix = library_dir.empty() ? std::string() : library_dir + "/";
+    int loaded;
     if (API_type_ == USB)
     {
-        loadLibraries(KINOVA_USB_LIBRARY,KINOVA_COMM_USB_LIBRARY);
+        loaded = loadLibraries((prefix + KINOVA_USB_LIBRARY).c_str(),
+                               (prefix + KINOVA_COMM_USB_LIBRARY).c_str());
     }
     else
     {
-        loadLibraries(KINOVA_ETH_LIBRARY,KINOVA_COMM_ETH_LIBRARY);
+        loaded = loadLibraries((prefix + KINOVA_ETH_LIBRARY).c_str(),
+                               (prefix + KINOVA_COMM_ETH_LIBRARY).c_str());
+    }
+    if (loaded != 1)
+    {
+        return 0;
     }
 
     // %Tag(general function)%
@@ -330,7 +368,12 @@ int KinovaAPI::initializeKinovaAPIFunctions(KinovaAPIType connection_type)
     setTorqueInactivityType = (int (*)(int))initCommandLayerFunction("SetTorqueInactivityType");
 
         // %EndTag(experimental)%
-    
+
+    if (missing_symbols_ != 0)
+    {
+        RCLCPP_ERROR(logger(), "%d Kinova API symbol(s) could not be resolved", missing_symbols_);
+        return 0;
+    }
     return 1;
 }
 
@@ -340,13 +383,17 @@ int KinovaAPI::loadLibraries(const char *command_lib, const char *comm_lib)
     API_command_lib_  = dlopen(command_lib,  RTLD_NOW | RTLD_GLOBAL);
     if (API_command_lib_ == NULL)
     {
-        ROS_FATAL("%s", dlerror());
+        RCLCPP_FATAL(logger(), "Could not load the Kinova command layer library '%s': %s",
+                     command_lib, dlErrorString());
         return 0;
     }
     kinova_comm_lib_ = dlopen(comm_lib, RTLD_NOW | RTLD_GLOBAL);
     if (kinova_comm_lib_ == NULL)
     {
-        ROS_FATAL("%s", dlerror());
+        RCLCPP_FATAL(logger(), "Could not load the Kinova comm layer library '%s': %s",
+                     comm_lib, dlErrorString());
+        dlclose(API_command_lib_);
+        API_command_lib_ = nullptr;
         return 0;
     }
     return 1;

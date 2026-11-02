@@ -46,12 +46,15 @@
 #ifndef KINOVA_DRIVER_KINOVA_COMM_H
 #define KINOVA_DRIVER_KINOVA_COMM_H
 
-#include <boost/thread/recursive_mutex.hpp>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #include <kinova/KinovaTypes.h>
 
 #include <kinova_driver/kinova_ros_types.h>
 #include "kinova_driver/kinova_api.h"
+#include "kinova_driver/kinova_comm_config.hpp"
 
 
 namespace kinova
@@ -60,10 +63,10 @@ namespace kinova
 class KinovaComm
 {
  public:
-    KinovaComm(const ros::NodeHandle& node_handle,
-             boost::recursive_mutex& api_mutex,
-             const bool is_movement_on_start,
-             const std::string & kinova_robotType);
+    //! \brief Connect to the arm described by config.
+    //! \throws KinovaCommException on any failure. The API is closed again before throwing if it
+    //!          had already been initialized.
+    explicit KinovaComm(const KinovaCommConfig & config);
     ~KinovaComm();
 
     // %Tag(general functions)
@@ -181,7 +184,7 @@ class KinovaComm
 
 
  private:
-    boost::recursive_mutex& api_mutex_;
+    std::recursive_mutex api_mutex_;
     kinova::KinovaAPI kinova_api_;
     bool is_software_stop_;
     int num_fingers_;

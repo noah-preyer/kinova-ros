@@ -43,186 +43,210 @@
  *
  */
 
-#include <ros/ros.h>
 #include "kinova_driver/kinova_comm.h"
-#include <string>
-#include <vector>
-#include <tf/tf.h>
+
+#include <rclcpp/logging.hpp>
+
 #include <arpa/inet.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <typeinfo>
+#include <unistd.h>
+#include <vector>
 
 namespace kinova
 {
 
-KinovaComm::KinovaComm(const ros::NodeHandle& node_handle,
-                   boost::recursive_mutex &api_mutex,
-                   const bool is_movement_on_start,
-                   const std::string &kinova_robotType)
-    : is_software_stop_(false), api_mutex_(api_mutex)
+namespace
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+rclcpp::Logger logger()
+{
+    return rclcpp::get_logger("kinova_comm");
+}
+}  // namespace
+
+KinovaComm::KinovaComm(const KinovaCommConfig & config)
+    : is_software_stop_(false)
+{
+    // num_joints_ and num_fingers_ are read from fixed positions of the type code.
+    if (!valid_kinovaRobotType(config.robot_type))
+    {
+        throw KinovaCommException("Invalid Kinova robot type '" + config.robot_type + "'", 0);
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     int result = NO_ERROR_KINOVA;
+    bool api_initialized = false;
 
-    //initialize kinova api functions
-    std::string api_type;
-    node_handle.param<std::string>("connection_type", api_type, "USB");
-    if (api_type == "USB")
-      kinova_api_.initializeKinovaAPIFunctions(USB);
-    else
-      kinova_api_.initializeKinovaAPIFunctions(ETHERNET);
-
-
-    //Set ethernet parameters
-    EthernetCommConfig ethernet_settings;
-    std::string local_IP,subnet_mask;
-    int local_cmd_port,local_bcast_port;
-    node_handle.getParam("ethernet/local_machine_IP", local_IP);
-    node_handle.getParam("ethernet/subnet_mask", subnet_mask);
-    node_handle.getParam("ethernet/local_cmd_port", local_cmd_port);
-    node_handle.getParam("ethernet/local_broadcast_port", local_bcast_port);
-    ethernet_settings.localCmdport = local_cmd_port;
-    ethernet_settings.localBcastPort = local_bcast_port;
-    ethernet_settings.localIpAddress = inet_addr(local_IP.c_str());
-    ethernet_settings.subnetMask = inet_addr(subnet_mask.c_str());
-    ethernet_settings.rxTimeOutInMs = 1000;
-    ethernet_settings.robotIpAddress = inet_addr("192.168.100.11");
-    ethernet_settings.robotPort = 55000;
-
-    // Get the serial number parameter for the arm we wish to connect to
-    std::string serial_number = "";
-    node_handle.getParam("serial_number", serial_number);
-
-    int api_version[API_VERSION_COUNT];
-    result = kinova_api_.getAPIVersion(api_version);
-    if (result != NO_ERROR_KINOVA)
+    try
     {
-        throw KinovaCommException("Could not get the Kinova API version", result);
-    }
-
-    ROS_INFO_STREAM("Initializing Kinova "<< api_type.c_str()
-                    << " API (header version: " << COMMAND_LAYER_VERSION
-                    << ", library version: " << api_version[0] << "."
-                                             << api_version[1] << "." << api_version[2] << ")");
-
-    if (api_type == "USB"){
-      result = kinova_api_.initAPI();
-    }
-    else{
-        result =kinova_api_.initEthernetAPI(ethernet_settings);
-    }
-
-    if (result != NO_ERROR_KINOVA)
-    {
-        throw KinovaCommException("Could not initialize Kinova API", result);
-    }
-
-    result = kinova_api_.refresDevicesList();
-
-    result = NO_ERROR_KINOVA;
-    int devices_count = kinova_api_.getDevices(devices_list_, result);
-    if (result != NO_ERROR_KINOVA)
-    {
-        throw KinovaCommException("Could not get devices list", result);
-    }
-
-    if (result != NO_ERROR_KINOVA)
-    {
-        throw KinovaCommException("Could not get devices list count.", result);
-    }
-
-    bool found_arm = false;
-    for (int device_i = 0; device_i < devices_count; device_i++)
-    {
-        // If no device is specified, just use the first available device
-        if (serial_number == "" || serial_number == "not_set" ||
-            std::strncmp(serial_number.c_str(),
-                         devices_list_[device_i].SerialNumber,
-                         std::min(serial_number.length(), 
-                                  strlen(devices_list_[device_i].SerialNumber))) 
-            == 0)
+        //initialize kinova api functions
+        const std::string & api_type = config.connection_type;
+        if (kinova_api_.initializeKinovaAPIFunctions(api_type == "USB" ? USB : ETHERNET,
+                                                     config.api_library_dir) != 1)
         {
-            result = kinova_api_.setActiveDevice(devices_list_[device_i]);
-            if (result != NO_ERROR_KINOVA)
+            throw KinovaCommException("Could not load the Kinova API libraries", 0);
+        }
+
+
+        //Set ethernet parameters
+        EthernetCommConfig ethernet_settings;
+        ethernet_settings.localCmdport = config.local_cmd_port;
+        ethernet_settings.localBcastPort = config.local_broadcast_port;
+        ethernet_settings.localIpAddress = inet_addr(config.local_machine_ip.c_str());
+        ethernet_settings.subnetMask = inet_addr(config.subnet_mask.c_str());
+        ethernet_settings.rxTimeOutInMs = 1000;
+        ethernet_settings.robotIpAddress = inet_addr("192.168.100.11");
+        ethernet_settings.robotPort = 55000;
+
+        // Get the serial number parameter for the arm we wish to connect to
+        const std::string & serial_number = config.serial_number;
+
+        int api_version[API_VERSION_COUNT];
+        result = kinova_api_.getAPIVersion(api_version);
+        if (result != NO_ERROR_KINOVA)
+        {
+            throw KinovaCommException("Could not get the Kinova API version", result);
+        }
+
+        RCLCPP_INFO_STREAM(logger(), "Initializing Kinova "<< api_type.c_str()
+                        << " API (header version: " << COMMAND_LAYER_VERSION
+                        << ", library version: " << api_version[0] << "."
+                                                 << api_version[1] << "." << api_version[2] << ")");
+
+        if (api_type == "USB"){
+          result = kinova_api_.initAPI();
+        }
+        else{
+            result =kinova_api_.initEthernetAPI(ethernet_settings);
+        }
+
+        if (result != NO_ERROR_KINOVA)
+        {
+            throw KinovaCommException("Could not initialize Kinova API", result);
+        }
+        api_initialized = true;
+
+        result = kinova_api_.refresDevicesList();
+
+        result = NO_ERROR_KINOVA;
+        int devices_count = kinova_api_.getDevices(devices_list_, result);
+        if (result != NO_ERROR_KINOVA)
+        {
+            throw KinovaCommException("Could not get devices list", result);
+        }
+
+        if (result != NO_ERROR_KINOVA)
+        {
+            throw KinovaCommException("Could not get devices list count.", result);
+        }
+
+        bool found_arm = false;
+        for (int device_i = 0; device_i < devices_count; device_i++)
+        {
+            // If no device is specified, just use the first available device
+            if (serial_number == "" || serial_number == "not_set" ||
+                std::strncmp(serial_number.c_str(),
+                             devices_list_[device_i].SerialNumber,
+                             std::min(serial_number.length(),
+                                      strlen(devices_list_[device_i].SerialNumber)))
+                == 0)
             {
-                throw KinovaCommException("Could not set the active device", result);
+                result = kinova_api_.setActiveDevice(devices_list_[device_i]);
+                if (result != NO_ERROR_KINOVA)
+                {
+                    throw KinovaCommException("Could not set the active device", result);
+                }
+
+                GeneralInformations general_info;
+                result = kinova_api_.getGeneralInformations(general_info);
+                if (result != NO_ERROR_KINOVA)
+                {
+                    throw KinovaCommException("Could not get general information about the device", result);
+                }
+
+                ClientConfigurations configuration;
+                getConfig(configuration);
+
+                QuickStatus quick_status;
+                getQuickStatus(quick_status);
+
+                robot_type_ = quick_status.RobotType;
+
+                RCLCPP_INFO_STREAM(logger(), "Found " << devices_count << " device(s), using device at index " << device_i
+                                << " (model: " << configuration.Model
+                                << ", serial number: " << devices_list_[device_i].SerialNumber
+                                << ", code version: " << general_info.CodeVersion
+                                << ", code revision: " << general_info.CodeRevision << ")");
+
+                found_arm = true;
+                break;
             }
+        }
 
-            GeneralInformations general_info;
-            result = kinova_api_.getGeneralInformations(general_info);
-            if (result != NO_ERROR_KINOVA)
-            {
-                throw KinovaCommException("Could not get general information about the device", result);
-            }
+        if (!found_arm)
+        {
+            RCLCPP_ERROR(logger(), "Could not find the specified arm (serial: %s) among the %d attached devices",
+                      serial_number.c_str(), devices_count);
+            throw KinovaCommException("Could not find the specified arm", 0);
+        }
 
-            ClientConfigurations configuration;
-            getConfig(configuration);
+        //find the number of joints and fingers of the arm using the robot type from the config
+        num_joints_ = config.robot_type[3]-'0';
+        num_fingers_ = config.robot_type[5]-'0';
 
-            QuickStatus quick_status;
-            getQuickStatus(quick_status);
+        // On a cold boot the arm may not respond to commands from the API right away.
+        // This kick-starts the Control API so that it's ready to go.
+        startAPI();
+        stopAPI();
+        startAPI();
 
-            robot_type_ = quick_status.RobotType;
+        //Set robot to use manual COM parameters
+        if (config.use_estimated_com == true)
+            kinova_api_.setGravityType(OPTIMAL);
+        else
+            kinova_api_.setGravityType(MANUAL_INPUT);
 
-            ROS_INFO_STREAM("Found " << devices_count << " device(s), using device at index " << device_i
-                            << " (model: " << configuration.Model
-                            << ", serial number: " << devices_list_[device_i].SerialNumber
-                            << ", code version: " << general_info.CodeVersion
-                            << ", code revision: " << general_info.CodeRevision << ")");
+        //Set torque safety factor to 1
+        kinova_api_.setTorqueSafetyFactor(1);
 
-            found_arm = true;
-            break;
+
+        // Set the angular velocity of each of the joints to zero
+        TrajectoryPoint kinova_velocity;
+        memset(&kinova_velocity, 0, sizeof(kinova_velocity));
+        setCartesianVelocities(kinova_velocity.Position.CartesianPosition);
+
+        if (config.movement_on_start)
+        {
+            initFingers();
+        }
+        else
+        {
+            RCLCPP_WARN(logger(), "Movement on connection to the arm has been suppressed on initialization. You may "
+                     "have to home the arm (through the home service) before movement is possible");
         }
     }
-
-    if (!found_arm)
+    catch (...)
     {
-        ROS_ERROR("Could not find the specified arm (serial: %s) among the %d attached devices",
-                  serial_number.c_str(), devices_count);
-        throw KinovaCommException("Could not find the specified arm", 0);
-    }
-
-    //find the number of joints and fingers of the arm using robotType passed from arm node
-    num_joints_ = kinova_robotType[3]-'0';
-    num_fingers_ = kinova_robotType[5]-'0';
-
-    // On a cold boot the arm may not respond to commands from the API right away.
-    // This kick-starts the Control API so that it's ready to go.
-    startAPI();
-    stopAPI();
-    startAPI();
-
-    //Set robot to use manual COM parameters
-    bool use_estimated_COM;
-    node_handle.param("torque_parameters/use_estimated_COM_parameters",
-                          use_estimated_COM,true);
-    if (use_estimated_COM == true)
-        kinova_api_.setGravityType(OPTIMAL);
-    else
-        kinova_api_.setGravityType(MANUAL_INPUT);
-
-    //Set torque safety factor to 1
-    kinova_api_.setTorqueSafetyFactor(1);
-
-
-    // Set the angular velocity of each of the joints to zero
-    TrajectoryPoint kinova_velocity;
-    memset(&kinova_velocity, 0, sizeof(kinova_velocity));
-    setCartesianVelocities(kinova_velocity.Position.CartesianPosition);
-
-    if (is_movement_on_start)
-    {
-        initFingers();
-    }
-    else
-    {
-        ROS_WARN("Movement on connection to the arm has been suppressed on initialization. You may "
-                 "have to home the arm (through the home service) before movement is possible");
+        // The destructor does not run for a constructor that throws, so release the arm here.
+        if (api_initialized)
+        {
+            kinova_api_.closeAPI();
+        }
+        throw;
     }
 }
 
 
 KinovaComm::~KinovaComm()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     kinova_api_.closeAPI();
 }
 
@@ -232,12 +256,12 @@ KinovaComm::~KinovaComm()
  */
 void KinovaComm::startAPI()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     if (is_software_stop_)
     {
         is_software_stop_ = false;
         kinova_api_.stopControlAPI();
-        ros::Duration(0.05).sleep();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     int result = kinova_api_.startControlAPI();
@@ -253,7 +277,7 @@ void KinovaComm::startAPI()
  */
 void KinovaComm::stopAPI()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     is_software_stop_ = true;
 
     int result = kinova_api_.stopControlAPI();
@@ -286,7 +310,7 @@ bool KinovaComm::isStopped()
  */
 void KinovaComm::startForceControl()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.startForceControl();
     if (result != NO_ERROR_KINOVA)
     {
@@ -300,7 +324,7 @@ void KinovaComm::startForceControl()
  */
 void KinovaComm::stopForceControl()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.stopForceControl();
     if (result != NO_ERROR_KINOVA)
     {
@@ -333,7 +357,7 @@ int KinovaComm::robotType() const
  */
 void KinovaComm::getQuickStatus(QuickStatus &quick_status)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&quick_status, 0, sizeof(quick_status));  // zero structure
     int result = kinova_api_.getQuickStatus(quick_status);
     if (result != NO_ERROR_KINOVA)
@@ -349,7 +373,7 @@ void KinovaComm::getQuickStatus(QuickStatus &quick_status)
  */
 void KinovaComm::setConfig(const ClientConfigurations &config)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.setClientConfigurations(config);
     if (result != NO_ERROR_KINOVA)
     {
@@ -364,7 +388,7 @@ void KinovaComm::setConfig(const ClientConfigurations &config)
  */
 void KinovaComm::getConfig(ClientConfigurations &config)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&config, 0, sizeof(config));  // zero structure
 
     int result = kinova_api_.getClientConfigurations(config);
@@ -381,7 +405,7 @@ void KinovaComm::getConfig(ClientConfigurations &config)
  */
 void KinovaComm::printConfig(const ClientConfigurations &config)
 {
-    ROS_INFO_STREAM("Arm configuration:\n"
+    RCLCPP_INFO_STREAM(logger(), "Arm configuration:\n"
                     "\tClientID: " << config.ClientID <<
                     "\n\tClientName: " << config.ClientName <<
                     "\n\tOrganization: " << config.Organization <<
@@ -410,7 +434,7 @@ void KinovaComm::printConfig(const ClientConfigurations &config)
  */
 void KinovaComm::getControlType(int &controlType)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&controlType, 0, sizeof(controlType)); //zero structure
     int result = kinova_api_.getControlType(controlType);
     if (result!=NO_ERROR_KINOVA)
@@ -426,7 +450,7 @@ void KinovaComm::getControlType(int &controlType)
  */
 void KinovaComm::getGeneralInformations(GeneralInformations &general_info)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&general_info, 0, sizeof(general_info));
     int result = kinova_api_.getGeneralInformations(general_info);
     if (result != NO_ERROR_KINOVA)
@@ -442,7 +466,7 @@ void KinovaComm::getGeneralInformations(GeneralInformations &general_info)
  */
 void KinovaComm::getSensorsInfo(SensorsInfo &sensor_Info)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&sensor_Info, 0, sizeof(sensor_Info));
     int result = kinova_api_.getSensorsInfo(sensor_Info);
     if (result != NO_ERROR_KINOVA)
@@ -458,7 +482,7 @@ void KinovaComm::getSensorsInfo(SensorsInfo &sensor_Info)
  */
 void KinovaComm::getForcesInfo(ForcesInfo &force_Info)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&force_Info, 0, sizeof(force_Info));
     int result = kinova_api_.getForcesInfo(force_Info);
     if (result != NO_ERROR_KINOVA)
@@ -474,7 +498,7 @@ void KinovaComm::getForcesInfo(ForcesInfo &force_Info)
  */
 void KinovaComm::getGripperStatus(Gripper &gripper_status)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&gripper_status, 0, sizeof(gripper_status));
     int result = kinova_api_.getGripperStatus(gripper_status);
     if (result != NO_ERROR_KINOVA)
@@ -492,13 +516,13 @@ void KinovaComm::getGripperStatus(Gripper &gripper_status)
  */
 void KinovaComm::setAngularControl()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     TrajectoryFIFO trajectory_fifo;
     memset(&trajectory_fifo, 0, sizeof(trajectory_fifo));
     getGlobalTrajectoryInfo(trajectory_fifo);
     if(trajectory_fifo.TrajectoryCount > 0)
     {
-        ROS_WARN("Current tranjectory count is %d, Please wait the trajectory to finish to swich to Angular control.", trajectory_fifo.TrajectoryCount);
+        RCLCPP_WARN(logger(), "Current tranjectory count is %d, Please wait the trajectory to finish to swich to Angular control.", trajectory_fifo.TrajectoryCount);
         return;
     }
     int result = kinova_api_.setAngularControl();
@@ -518,7 +542,7 @@ void KinovaComm::setAngularControl()
  */
 void KinovaComm::getAngularCommand(AngularPosition &angular_command)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&angular_command, 0, sizeof(angular_command));
     int result = kinova_api_.getAngularCommand(angular_command);
     if (result != NO_ERROR_KINOVA)
@@ -534,7 +558,7 @@ void KinovaComm::getAngularCommand(AngularPosition &angular_command)
  */
 void KinovaComm::getJointAngles(KinovaAngles &angles)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     AngularPosition kinova_angles;
     memset(&kinova_angles, 0, sizeof(kinova_angles));  // zero structure
 
@@ -554,13 +578,13 @@ void KinovaComm::getJointAngles(KinovaAngles &angles)
  * @param timeout default value 0.0, not used.
  * @param push default true, errase all trajectory before request motion..
  */
-void KinovaComm::setJointAngles(const KinovaAngles &angles, double speedJoint123, double speedJoint4567, int timeout, bool push)
+void KinovaComm::setJointAngles(const KinovaAngles &angles, double speedJoint123, double speedJoint4567, int /*timeout*/, bool push)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_WARN_STREAM("In class [" << typeid(*this).name() << "], function ["<< __FUNCTION__ << "]: The angles could not be set because the arm is stopped" << std::endl);
+        RCLCPP_WARN_STREAM(logger(), "In class [" << typeid(*this).name() << "], function ["<< __FUNCTION__ << "]: The angles could not be set because the arm is stopped" << std::endl);
         return;
     }
 
@@ -608,7 +632,7 @@ void KinovaComm::setJointAngles(const KinovaAngles &angles, double speedJoint123
  */
 void KinovaComm::getJointVelocities(KinovaAngles &vels)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     AngularPosition kinova_vels;
     memset(&kinova_vels, 0, sizeof(kinova_vels));  // zero structure
 
@@ -638,11 +662,11 @@ void KinovaComm::getJointVelocities(KinovaAngles &vels)
  */
 void KinovaComm::setJointVelocities(const AngularInfo &joint_vel)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("The velocities could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The velocities could not be set because the arm is stopped");
         return;
     }
 
@@ -666,11 +690,11 @@ void KinovaComm::setJointVelocities(const AngularInfo &joint_vel)
 
 void KinovaComm::setJointTorques(float joint_torque[])
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("The joint torques could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The joint torques could not be set because the arm is stopped");
         return;
     }
 
@@ -688,10 +712,10 @@ void KinovaComm::setJointTorques(float joint_torque[])
 
 int KinovaComm::sendCartesianForceCommand(float force_cmd[COMMAND_SIZE])
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     if (isStopped())
     {
-        ROS_INFO("The force cmd could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The force cmd could not be set because the arm is stopped");
         return 0;
     }
 
@@ -716,7 +740,7 @@ int KinovaComm::sendCartesianForceCommand(float force_cmd[COMMAND_SIZE])
  */
 void KinovaComm::getJointAccelerations(AngularAcceleration &joint_acc)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&joint_acc, 0, sizeof(joint_acc));
     int result = kinova_api_.getAngularAcceleration(joint_acc);
     if (result != NO_ERROR_KINOVA)
@@ -732,7 +756,7 @@ void KinovaComm::getJointAccelerations(AngularAcceleration &joint_acc)
  */
 void KinovaComm::getJointTorques(KinovaAngles &tqs)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     AngularPosition kinova_tqs;
     memset(&kinova_tqs, 0, sizeof(kinova_tqs));  // zero structure
 
@@ -747,7 +771,7 @@ void KinovaComm::getJointTorques(KinovaAngles &tqs)
 
 void KinovaComm::getGravityCompensatedTorques(KinovaAngles &tqs)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     AngularPosition kinova_tqs;
     memset(&kinova_tqs, 0, sizeof(kinova_tqs));  // zero structure
 
@@ -767,7 +791,7 @@ void KinovaComm::getGravityCompensatedTorques(KinovaAngles &tqs)
  */
 void KinovaComm::getJointCurrent(AngularPosition &anguler_current)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&anguler_current, 0, sizeof(anguler_current));
     int result = kinova_api_.getAngularCurrent(anguler_current);
     if (result != NO_ERROR_KINOVA)
@@ -781,7 +805,7 @@ void KinovaComm::getJointCurrent(AngularPosition &anguler_current)
  */
 void KinovaComm::setZeroTorque()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int actuator_address[] = {16,17,18,19,20,21,25};
     int result;
     for (int i=0;i<num_joints_;i++)
@@ -792,7 +816,7 @@ void KinovaComm::setZeroTorque()
     {
         throw KinovaCommException("Could not set zero torques", result);
     }
-    ROS_WARN("Torques for all joints set to zero");
+    RCLCPP_WARN(logger(), "Torques for all joints set to zero");
 }
 
 
@@ -803,11 +827,11 @@ void KinovaComm::setZeroTorque()
  */
 void KinovaComm::setJointTorqueMinMax(AngularInfo &min, AngularInfo &max)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
-    ROS_INFO("Setting min torues - %f %f %f %f %f %f %f", min.Actuator1,
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    RCLCPP_INFO(logger(), "Setting min torues - %f %f %f %f %f %f %f", min.Actuator1,
               min.Actuator2,min.Actuator3,min.Actuator4,min.Actuator5,
               min.Actuator6,min.Actuator7);
-    ROS_INFO("Setting max torues - %f %f %f %f %f %f %f", max.Actuator1,
+    RCLCPP_INFO(logger(), "Setting max torues - %f %f %f %f %f %f %f", max.Actuator1,
               max.Actuator2,max.Actuator3,max.Actuator4,max.Actuator5,
               max.Actuator6,max.Actuator7);
 
@@ -826,7 +850,7 @@ void KinovaComm::setPayload(std::vector<float> payload)
 {
     float payload_[4];
     std::copy(payload.begin(), payload.end(), payload_);
-    ROS_INFO("Payload set to - %f %f %f %f", payload_[0],payload_[1],
+    RCLCPP_INFO(logger(), "Payload set to - %f %f %f %f", payload_[0],payload_[1],
             payload_[2],payload_[3]);
     int result = kinova_api_.setGravityPayload(payload_);
     if (result != NO_ERROR_KINOVA)
@@ -841,7 +865,7 @@ void KinovaComm::setPayload(std::vector<float> payload)
  */
 void KinovaComm::setToquesControlSafetyFactor(float factor)
 {
-    ROS_INFO("Setting torque safety factor to %f", factor);
+    RCLCPP_INFO(logger(), "Setting torque safety factor to %f", factor);
     int result = kinova_api_.setTorqueSafetyFactor(factor);
     if (result != NO_ERROR_KINOVA)
     {
@@ -858,12 +882,12 @@ void KinovaComm::setRobotCOMParam(GRAVITY_TYPE type,std::vector<float> params)
     memset(&com_parameters, 0, sizeof(com_parameters));
     std::ostringstream com_params;
     com_params<<"Setting COM parameters to ";
-    for (int i=0; i<params.size(); i++)
+    for (size_t i=0; i<params.size(); i++)
     {
         com_parameters[i] = params[i];
         com_params<<params[i]<<", ";
     }
-    ROS_INFO_STREAM(com_params.str());
+    RCLCPP_INFO_STREAM(logger(), com_params.str());
     int result;
     if (type == MANUAL_INPUT)
         result = kinova_api_.setGravityManualInputParam(com_parameters);
@@ -899,13 +923,13 @@ int KinovaComm::runCOMParameterEstimation(ROBOT_TYPE type)
     int result;
     if(type == SPHERICAL_7DOF_SERVICE)
     {
-        ROS_INFO("Running 7 dof robot COM estimation sequence");
+        RCLCPP_INFO(logger(), "Running 7 dof robot COM estimation sequence");
         result = kinova_api_.runGravityZEstimationSequence7DOF(type,COMparams);
     }
     else
     {
         double params[OPTIMAL_Z_PARAM_SIZE];
-        ROS_INFO("Running COM estimation sequence");
+        RCLCPP_INFO(logger(), "Running COM estimation sequence");
         result = kinova_api_.runGravityZEstimationSequence(type,params);
         for (int i=0;i<OPTIMAL_Z_PARAM_SIZE;i++)
             COMparams[i] = (float)params[i];
@@ -930,12 +954,12 @@ int KinovaComm::runCOMParameterEstimation(ROBOT_TYPE type)
  */
 void KinovaComm::printAngles(const KinovaAngles &angles)
 {
-    ROS_INFO("Joint angles (deg) -- J1: %f, J2: %f J3: %f, J4: %f, J5: %f, J6: %f, J7: %f \n",
+    RCLCPP_INFO(logger(), "Joint angles (deg) -- J1: %f, J2: %f J3: %f, J4: %f, J5: %f, J6: %f, J7: %f \n",
              angles.Actuator1, angles.Actuator2, angles.Actuator3,
              angles.Actuator4, angles.Actuator5, angles.Actuator6,
              angles.Actuator7);
 
-    ROS_INFO("Joint angles (rad) -- J1: %f, J2: %f J3: %f, J4: %f, J5: %f, J6: %f, J7: %f \n",
+    RCLCPP_INFO(logger(), "Joint angles (rad) -- J1: %f, J2: %f J3: %f, J4: %f, J5: %f, J6: %f, J7: %f \n",
              angles.Actuator1/180.0*M_PI, angles.Actuator2/180.0*M_PI, angles.Actuator3/180.0*M_PI,
              angles.Actuator4/180.0*M_PI, angles.Actuator5/180.0*M_PI, angles.Actuator6/180.0*M_PI,
              angles.Actuator7/180.0*M_PI);
@@ -950,17 +974,17 @@ void KinovaComm::printAngles(const KinovaAngles &angles)
  */
 void KinovaComm::setCartesianControl()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     TrajectoryFIFO trajectory_fifo;
     memset(&trajectory_fifo, 0, sizeof(trajectory_fifo));
     getGlobalTrajectoryInfo(trajectory_fifo);
     if(trajectory_fifo.TrajectoryCount > 0)
     {
-        ROS_WARN("Current tranjectory count is %d, Please wait the trajectory to finish to swich to Cartesian control.", trajectory_fifo.TrajectoryCount);
+        RCLCPP_WARN(logger(), "Current tranjectory count is %d, Please wait the trajectory to finish to swich to Cartesian control.", trajectory_fifo.TrajectoryCount);
         return;
     }
     int result = kinova_api_.setCartesianControl();
-    ROS_WARN("%d", result);
+    RCLCPP_WARN(logger(), "%d", result);
     if (result != NO_ERROR_KINOVA)
     {
         throw KinovaCommException("Could not set Cartesian control", result);
@@ -994,7 +1018,7 @@ void KinovaComm::setCartesianControl()
  */
 void KinovaComm::getCartesianCommand(CartesianPosition &cartesian_command)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&cartesian_command, 0, sizeof(cartesian_command));
     int result = kinova_api_.getCartesianCommand(cartesian_command);
     if (result != NO_ERROR_KINOVA)
@@ -1011,7 +1035,7 @@ void KinovaComm::getCartesianCommand(CartesianPosition &cartesian_command)
  */
 void KinovaComm::getCartesianPosition(KinovaPose &position)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     CartesianPosition kinova_cartesian_position;
     memset(&kinova_cartesian_position, 0, sizeof(kinova_cartesian_position));  // zero structure
 
@@ -1040,13 +1064,13 @@ void KinovaComm::getCartesianPosition(KinovaPose &position)
  * @param timeout default 0.0, not used.
  * @param push default false, does not erase previous trajectory point before new motion. If you want to erase all trajectory before request motion, set to true..
  */
-void KinovaComm::setCartesianPosition(const KinovaPose &pose, int timeout, bool push)
+void KinovaComm::setCartesianPosition(const KinovaPose &pose, int /*timeout*/, bool push)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_WARN_STREAM("In class [" << typeid(*this).name() << "], function ["<< __FUNCTION__ << "]: The pose could not be set because the arm is stopped" << std::endl);
+        RCLCPP_WARN_STREAM(logger(), "In class [" << typeid(*this).name() << "], function ["<< __FUNCTION__ << "]: The pose could not be set because the arm is stopped" << std::endl);
         return;
     }
 
@@ -1093,11 +1117,11 @@ void KinovaComm::setCartesianPosition(const KinovaPose &pose, int timeout, bool 
  */
 void KinovaComm::setCartesianVelocities(const CartesianInfo &velocities)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("The cartesian velocities could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The cartesian velocities could not be set because the arm is stopped");
         kinova_api_.eraseAllTrajectories();
         return;
     }
@@ -1129,11 +1153,11 @@ void KinovaComm::setCartesianVelocities(const CartesianInfo &velocities)
  */
 void KinovaComm::setCartesianVelocitiesWithFingers(const CartesianInfo &velocities, const FingerAngles& fingers)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("The cartesian velocities could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The cartesian velocities could not be set because the arm is stopped");
         kinova_api_.eraseAllTrajectories();
         return;
     }
@@ -1169,11 +1193,11 @@ void KinovaComm::setCartesianVelocitiesWithFingers(const CartesianInfo &velociti
  */
 void KinovaComm::setCartesianVelocitiesWithFingerVelocity(const CartesianInfo &velocities, const FingerAngles& fingers)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("The cartesian velocities could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The cartesian velocities could not be set because the arm is stopped");
         kinova_api_.eraseAllTrajectories();
         return;
     }
@@ -1207,7 +1231,7 @@ void KinovaComm::setCartesianVelocitiesWithFingerVelocity(const CartesianInfo &v
  */
 float KinovaComm::getMaxTranslationVelocity()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     ClientConfigurations configuration;
     getConfig(configuration);
     return configuration.MaxTranslationVelocity;
@@ -1220,7 +1244,7 @@ float KinovaComm::getMaxTranslationVelocity()
  */
 void KinovaComm::setMaxTranslationVelocity(const float &max_trans_vel)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     ClientConfigurations configuration;
     getConfig(configuration);
     usleep(100000);
@@ -1236,7 +1260,7 @@ void KinovaComm::setMaxTranslationVelocity(const float &max_trans_vel)
  */
 float KinovaComm::getMaxOrientationVelocity()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     ClientConfigurations configuration;
     getConfig(configuration);
     return configuration.MaxOrientationVelocity;
@@ -1250,7 +1274,7 @@ float KinovaComm::getMaxOrientationVelocity()
  */
 void KinovaComm::setMaxOrientationVelocity(const float &max_orient_vel)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     ClientConfigurations configuration;
     getConfig(configuration);
     usleep(100000);
@@ -1265,7 +1289,7 @@ void KinovaComm::setMaxOrientationVelocity(const float &max_orient_vel)
  */
 void KinovaComm::getCartesianForce(KinovaPose &cart_force)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     CartesianPosition kinova_cartesian_force;
     memset(&kinova_cartesian_force, 0, sizeof(kinova_cartesian_force));  // zero structure
 
@@ -1286,7 +1310,7 @@ void KinovaComm::getCartesianForce(KinovaPose &cart_force)
  */
 void KinovaComm::setCartesianForceMinMax(const CartesianInfo &min, const CartesianInfo& max)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.setCartesianForceMinMax(min, max);
     if (result != NO_ERROR_KINOVA)
     {
@@ -1302,7 +1326,7 @@ void KinovaComm::setCartesianForceMinMax(const CartesianInfo &min, const Cartesi
  */
 void KinovaComm::setCartesianInertiaDamping(const CartesianInfo &inertia, const CartesianInfo& damping)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.setCartesianInertiaDamping(inertia, damping);
     if (result != NO_ERROR_KINOVA)
     {
@@ -1318,7 +1342,7 @@ void KinovaComm::setCartesianInertiaDamping(const CartesianInfo &inertia, const 
  */
 void KinovaComm::printPosition(const KinovaPose &position)
 {
-    ROS_INFO("Arm position\n"
+    RCLCPP_INFO(logger(), "Arm position\n"
              "\tposition (m) -- x: %f, y: %f z: %f\n"
              "\trotation (rad) -- theta_x: %f, theta_y: %f, theta_z: %f",
              position.X, position.Y, position.Z,
@@ -1332,7 +1356,7 @@ void KinovaComm::printPosition(const KinovaPose &position)
  */
 void KinovaComm::getUserCommand(UserPosition &user_position)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&user_position, 0, sizeof(user_position));
     TrajectoryPoint trajecory_point;
     int result = kinova_api_.getActualTrajectoryInfo(trajecory_point);
@@ -1350,7 +1374,7 @@ void KinovaComm::getUserCommand(UserPosition &user_position)
  */
 void KinovaComm::getGlobalTrajectoryInfo(TrajectoryFIFO &trajectoryFIFO)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&trajectoryFIFO, 0, sizeof(trajectoryFIFO));
     int result = kinova_api_.getGlobalTrajectoryInfo(trajectoryFIFO);
     if (result != NO_ERROR_KINOVA)
@@ -1365,7 +1389,7 @@ void KinovaComm::getGlobalTrajectoryInfo(TrajectoryFIFO &trajectoryFIFO)
  */
 void KinovaComm::eraseAllTrajectories()
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.eraseAllTrajectories();
     if (result != NO_ERROR_KINOVA)
     {
@@ -1392,7 +1416,7 @@ int KinovaComm::numFingers() const
  */
 void KinovaComm::getFingerPositions(FingerAngles &fingers)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     CartesianPosition kinova_cartesian_position;
     memset(&kinova_cartesian_position, 0, sizeof(kinova_cartesian_position));  // zero structure
 
@@ -1418,13 +1442,13 @@ void KinovaComm::getFingerPositions(FingerAngles &fingers)
  * @param timeout timeout default 0.0, not used.
  * @param push default true, errase all trajectory before request motion.
  */
-void KinovaComm::setFingerPositions(const FingerAngles &fingers, int timeout, bool push)
+void KinovaComm::setFingerPositions(const FingerAngles &fingers, int /*timeout*/, bool push)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("The fingers could not be set because the arm is stopped");
+        RCLCPP_INFO(logger(), "The fingers could not be set because the arm is stopped");
         return;
     }
 
@@ -1505,7 +1529,7 @@ void KinovaComm::setFingerPositions(const FingerAngles &fingers, int timeout, bo
  */
 void KinovaComm::printFingers(const FingersPosition &fingers)
 {
-    ROS_INFO("Finger joint value -- F1: %f, F2: %f, F3: %f",
+    RCLCPP_INFO(logger(), "Finger joint value -- F1: %f, F2: %f, F3: %f",
              fingers.Finger1, fingers.Finger2, fingers.Finger3);
 }
 
@@ -1517,24 +1541,24 @@ void KinovaComm::printFingers(const FingersPosition &fingers)
  */
 void KinovaComm::homeArm(void)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     if (isStopped())
     {
-        ROS_INFO("Arm is stopped, cannot home");
+        RCLCPP_INFO(logger(), "Arm is stopped, cannot home");
         return;
     }
     else if (isHomed())
     {
-        ROS_INFO("Arm is already in \"home\" position");
+        RCLCPP_INFO(logger(), "Arm is already in \"home\" position");
         return;
     }
 
     stopAPI();
-    ros::Duration(1.0).sleep();
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     startAPI();
 
-    ROS_INFO("Homing the arm");
+    RCLCPP_INFO(logger(), "Homing the arm");
     kinova_api_.moveHome();
 
     /*JoystickCommand mycommand;
@@ -1549,7 +1573,7 @@ void KinovaComm::homeArm(void)
         // if (myhome.isCloseToOther(KinovaAngles(currentAngles.Actuators), angle_tolerance))
         if(isHomed())
         {
-            ROS_INFO("Arm is in \"home\" position");
+            RCLCPP_INFO(logger(), "Arm is in \"home\" position");
             // release home button.
             mycommand.ButtonValue[2] = 0;
             kinova_api_.sendJoystickCommand(mycommand);
@@ -1559,7 +1583,7 @@ void KinovaComm::homeArm(void)
 
     mycommand.ButtonValue[2] = 0;
     kinova_api_.sendJoystickCommand(mycommand);
-    ROS_WARN("Homing arm timer out! If the arm is not in home position yet, please re-run home arm.");*/
+    RCLCPP_WARN(logger(), "Homing arm timer out! If the arm is not in home position yet, please re-run home arm.");*/
 
 }
 
@@ -1592,8 +1616,8 @@ bool KinovaComm::isHomed(void)
  */
 void KinovaComm::initFingers(void)
 {
-    ROS_INFO("Initializing fingers...this will take a few seconds and the fingers should open completely");
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    RCLCPP_INFO(logger(), "Initializing fingers...this will take a few seconds and the fingers should open completely");
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = kinova_api_.initFingers();
     if (result != NO_ERROR_KINOVA)
     {
@@ -1612,7 +1636,7 @@ void KinovaComm::initFingers(void)
  */
 void KinovaComm::setEndEffectorOffset(unsigned int status, float x, float y, float z)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
 
     int result = kinova_api_.setEndEffectorOffset(status, x, y, z);
     if (result != NO_ERROR_KINOVA)
@@ -1631,7 +1655,7 @@ void KinovaComm::setEndEffectorOffset(unsigned int status, float x, float y, flo
  */
 void KinovaComm::getEndEffectorOffset(unsigned int &status, float &x, float &y, float &z)
 {
-    boost::recursive_mutex::scoped_lock lock(api_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     memset(&status, 0, sizeof(status));
     memset(&x, 0, sizeof(x));
     memset(&y, 0, sizeof(y));
@@ -1648,12 +1672,12 @@ void KinovaComm::SetTorqueControlState(int state)
     int result;
     if (state)
     {
-        ROS_INFO("Switching to torque control");
+        RCLCPP_INFO(logger(), "Switching to torque control");
         result = kinova_api_.switchTrajectoryTorque(TORQUE);
     }
     else
     {
-        ROS_INFO("Switching to position control");
+        RCLCPP_INFO(logger(), "Switching to position control");
         result = kinova_api_.switchTrajectoryTorque(POSITION);
     }
     if (result != NO_ERROR_KINOVA)
@@ -1686,7 +1710,7 @@ int KinovaComm::SingularityAvoidanceInCartesianMode(int state)
 
 int KinovaComm::SetRedundantJointNullSpaceMotion(int state)
 {
-    ROS_INFO("Setting null space mode to %d",state);
+    RCLCPP_INFO(logger(), "Setting null space mode to %d",state);
     int result;
     if (state)
         result = kinova_api_.StartRedundantJointNullSpaceMotion();
@@ -1700,7 +1724,7 @@ int KinovaComm::SetRedundantJointNullSpaceMotion(int state)
     return 1;
 }
 
-int KinovaComm::SetRedundancyResolutionToleastSquares(int state)
+int KinovaComm::SetRedundancyResolutionToleastSquares(int /*state*/)
 {
     //Not Available in API
     return 1;

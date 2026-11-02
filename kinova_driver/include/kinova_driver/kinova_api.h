@@ -10,9 +10,9 @@
 #define KINOVA_DRIVER_KINOVA_API_H
 
 #include <dlfcn.h>
-#include <ros/ros.h>
 
 #include <iostream>
+#include <string>
 
 #include "kinova/Kinova.API.USBCommandLayerUbuntu.h"
 #include "kinova/Kinova.API.EthCommandLayerUbuntu.h"
@@ -38,7 +38,13 @@ class KinovaAPI
 {
 public:
     KinovaAPI(){}
-    int initializeKinovaAPIFunctions(KinovaAPIType connection_type);
+
+    //! \brief Load the vendor libraries and resolve every API function.
+    //! \arg library_dir - directory holding the vendor .so files. Empty means a bare-name
+    //!                     dlopen, resolved through LD_LIBRARY_PATH.
+    //! \return 1 on success. 0 if a library cannot be loaded or a symbol cannot be resolved.
+    int initializeKinovaAPIFunctions(KinovaAPIType connection_type,
+                                     const std::string & library_dir = "");
     int loadLibraries(const char *API_command_lib, const char *kinova_comm_lib);
     // %Tag(general function)%
 
@@ -229,9 +235,10 @@ public:
     // %EndTag(experimental)%
 
   private:
-    KinovaAPIType API_type_;
-    void *API_command_lib_;
-    void *kinova_comm_lib_;
+    KinovaAPIType API_type_ = USB;
+    void *API_command_lib_ = nullptr;
+    void *kinova_comm_lib_ = nullptr;
+    int missing_symbols_ = 0;
 
     void* initCommandLayerFunction(const char* name);
     void* initCommLayerFunction(const char* name);
