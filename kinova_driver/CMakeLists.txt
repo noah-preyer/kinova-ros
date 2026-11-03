@@ -121,6 +121,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_kinova_system test/test_kinova_system.cpp)
   target_link_libraries(test_kinova_system kinova_system)
 
+  ament_add_gtest(test_kinova_system_services test/test_kinova_system_services.cpp)
+  target_link_libraries(test_kinova_system_services kinova_system)
+
   # Loads the installed plugin through pluginlib; does not link kinova_system.
   ament_add_gtest(test_load_kinova_system test/test_load_kinova_system.cpp)
   ament_target_dependencies(test_load_kinova_system hardware_interface pluginlib)

@@ -15,6 +15,8 @@
 #include "kinova_driver/kinova_ros_types.h"
 #include "pluginlib/class_list_macros.hpp"
 #include "rclcpp/logging.hpp"
+#include "rclcpp/node_options.hpp"
+#include "rclcpp/utilities.hpp"
 
 namespace kinova_driver
 {
@@ -268,27 +270,164 @@ std::unique_ptr<kinova::KinovaDevice> KinovaSystem::createDevice()
   return std::make_unique<kinova::KinovaComm>(config);
 }
 
+KinovaSystem::~KinovaSystem()
+{
+  stopServices();
+}
+
+bool KinovaSystem::startServices()
+{
+  try {
+    rclcpp::NodeOptions options;
+    options.use_global_arguments(false);
+    service_node_ = std::make_shared<rclcpp::Node>(
+      comm_config_.robot_type + "_driver", options);
+    home_arm_service_ = service_node_->create_service<kinova_msgs::srv::HomeArm>(
+      "~/in/home_arm", [this](
+        const std::shared_ptr<kinova_msgs::srv::HomeArm::Request> request,
+        std::shared_ptr<kinova_msgs::srv::HomeArm::Response> response) {
+        handleHomeArm(request, response);
+      });
+    start_service_ = service_node_->create_service<kinova_msgs::srv::Start>(
+      "~/in/start", [this](
+        const std::shared_ptr<kinova_msgs::srv::Start::Request> request,
+        std::shared_ptr<kinova_msgs::srv::Start::Response> response) {
+        handleStart(request, response);
+      });
+    stop_service_ = service_node_->create_service<kinova_msgs::srv::Stop>(
+      "~/in/stop", [this](
+        const std::shared_ptr<kinova_msgs::srv::Stop::Request> request,
+        std::shared_ptr<kinova_msgs::srv::Stop::Response> response) {
+        handleStop(request, response);
+      });
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(service_node_);
+    stop_spinning_ = false;
+    // spin_once with a timeout instead of spin(): a cancel() that arrives before spin() starts
+    // would otherwise be lost and the join would hang.
+    spin_thread_ = std::thread(
+      [this, executor = executor_] {
+        while (!stop_spinning_ && rclcpp::ok()) {
+          executor->spin_once(std::chrono::milliseconds(50));
+        }
+      });
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger(), "Could not start the driver services: %s", e.what());
+    stopServices();
+    return false;
+  }
+  return true;
+}
+
+void KinovaSystem::stopServices()
+{
+  stop_spinning_ = true;
+  if (executor_) {
+    executor_->cancel();
+  }
+  if (spin_thread_.joinable()) {
+    spin_thread_.join();
+  }
+  home_arm_service_.reset();
+  start_service_.reset();
+  stop_service_.reset();
+  executor_.reset();
+  service_node_.reset();
+}
+
+void KinovaSystem::handleHomeArm(
+  const std::shared_ptr<kinova_msgs::srv::HomeArm::Request> /*request*/,
+  std::shared_ptr<kinova_msgs::srv::HomeArm::Response> response)
+{
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  if (!device_) {
+    response->homearm_result = "Rejected: hardware not configured";
+    return;
+  }
+  if (arm_velocity_claimed_) {
+    response->homearm_result = "Rejected: deactivate arm_controller before homing";
+    return;
+  }
+  try {
+    device_->homeArm();
+    response->homearm_result = "KINOVA ARM HAS BEEN RETURNED HOME";
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger(), "Could not home the Kinova arm: %s", e.what());
+    response->homearm_result = std::string("Failed: ") + e.what();
+  }
+}
+
+void KinovaSystem::handleStop(
+  const std::shared_ptr<kinova_msgs::srv::Stop::Request> /*request*/,
+  std::shared_ptr<kinova_msgs::srv::Stop::Response> response)
+{
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  if (!device_) {
+    response->stop_result = "Rejected: hardware not configured";
+    return;
+  }
+  try {
+    device_->stopAPI();
+    response->stop_result = "Arm stopped";
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger(), "Could not stop the Kinova arm: %s", e.what());
+    response->stop_result = std::string("Failed: ") + e.what();
+  }
+}
+
+void KinovaSystem::handleStart(
+  const std::shared_ptr<kinova_msgs::srv::Start::Request> /*request*/,
+  std::shared_ptr<kinova_msgs::srv::Start::Response> response)
+{
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  if (!device_) {
+    response->start_result = "Rejected: hardware not configured";
+    return;
+  }
+  try {
+    device_->startAPI();
+    response->start_result = "Arm started";
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger(), "Could not start the Kinova arm: %s", e.what());
+    response->start_result = std::string("Failed: ") + e.what();
+  }
+}
+
 CallbackReturn KinovaSystem::on_configure(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   // After an error the component is reconfigured without on_deactivate; stay silent until
   // on_activate.
   active_ = false;
+  stopServices();
   // Only one connection to the arm at a time: the old device closes the API when destroyed.
-  device_.reset();
+  {
+    std::lock_guard<std::mutex> lock(device_mutex_);
+    device_.reset();
+  }
+  std::unique_ptr<kinova::KinovaDevice> device;
   try {
-    device_ = createDevice();
+    device = createDevice();
   } catch (const std::exception & e) {
     RCLCPP_ERROR(logger(), "Could not connect to the Kinova arm: %s", e.what());
     return CallbackReturn::ERROR;
   }
-  if (!device_) {
+  if (!device) {
     RCLCPP_ERROR(logger(), "Could not connect to the Kinova arm: no device");
     return CallbackReturn::ERROR;
   }
 
-  // Make the state interfaces hold real values before anything reads them.
-  have_position_ = false;
-  if (read(rclcpp::Time(0), rclcpp::Duration(0, 0)) != return_type::OK) {
+  {
+    std::lock_guard<std::mutex> lock(device_mutex_);
+    device_ = std::move(device);
+    // Make the state interfaces hold real values before anything reads them.
+    have_position_ = false;
+    if (readLocked(rclcpp::Duration(0, 0)) != return_type::OK) {
+      device_.reset();
+      return CallbackReturn::ERROR;
+    }
+  }
+  if (enable_services_ && !startServices()) {
+    std::lock_guard<std::mutex> lock(device_mutex_);
     device_.reset();
     return CallbackReturn::ERROR;
   }
@@ -298,12 +437,15 @@ CallbackReturn KinovaSystem::on_configure(const rclcpp_lifecycle::State & /*prev
 CallbackReturn KinovaSystem::on_activate(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   kinova::FingerAngles fingers;
-  try {
-    device_->setAngularControl();
-    device_->getFingerPositions(fingers);
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "Could not activate the Kinova arm: %s", e.what());
-    return CallbackReturn::ERROR;
+  {
+    std::lock_guard<std::mutex> lock(device_mutex_);
+    try {
+      device_->setAngularControl();
+      device_->getFingerPositions(fingers);
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(logger(), "Could not activate the Kinova arm: %s", e.what());
+      return CallbackReturn::ERROR;
+    }
   }
   std::fill(arm_velocity_command_.begin(), arm_velocity_command_.end(), 0.0);
   finger_target_turns_ = fingers.Finger1;
@@ -317,13 +459,16 @@ CallbackReturn KinovaSystem::on_deactivate(const rclcpp_lifecycle::State & /*pre
 {
   // Silence write() first. The zero point below goes to the device directly.
   active_ = false;
-  try {
-    device_->setJointVelocitiesWithFingerPositions(
-      AngularInfo{}, fingerTargets(finger_target_turns_));
-    device_->eraseAllTrajectories();
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "Could not stop the Kinova arm: %s", e.what());
-    return CallbackReturn::ERROR;
+  {
+    std::lock_guard<std::mutex> lock(device_mutex_);
+    try {
+      device_->setJointVelocitiesWithFingerPositions(
+        AngularInfo{}, fingerTargets(finger_target_turns_));
+      device_->eraseAllTrajectories();
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(logger(), "Could not stop the Kinova arm: %s", e.what());
+      return CallbackReturn::ERROR;
+    }
   }
   last_sent_finger_turns_ = finger_target_turns_;
   return CallbackReturn::SUCCESS;
@@ -332,6 +477,8 @@ CallbackReturn KinovaSystem::on_deactivate(const rclcpp_lifecycle::State & /*pre
 CallbackReturn KinovaSystem::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   active_ = false;
+  stopServices();
+  std::lock_guard<std::mutex> lock(device_mutex_);
   device_.reset();
   return CallbackReturn::SUCCESS;
 }
@@ -339,6 +486,8 @@ CallbackReturn KinovaSystem::on_cleanup(const rclcpp_lifecycle::State & /*previo
 CallbackReturn KinovaSystem::on_shutdown(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   active_ = false;
+  stopServices();
+  std::lock_guard<std::mutex> lock(device_mutex_);
   device_.reset();
   return CallbackReturn::SUCCESS;
 }
@@ -347,6 +496,7 @@ CallbackReturn KinovaSystem::on_error(const rclcpp_lifecycle::State & /*previous
 {
   active_ = false;
   std::fill(arm_velocity_command_.begin(), arm_velocity_command_.end(), 0.0);
+  std::lock_guard<std::mutex> lock(device_mutex_);
   if (device_) {
     try {
       device_->setJointVelocitiesWithFingerPositions(
@@ -446,6 +596,12 @@ return_type KinovaSystem::perform_command_mode_switch(
 
 return_type KinovaSystem::read(const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  return readLocked(period);
+}
+
+return_type KinovaSystem::readLocked(const rclcpp::Duration & period)
+{
   kinova::KinovaAngles angles;
   kinova::KinovaAngles velocities;
   kinova::KinovaAngles torques;
@@ -483,6 +639,10 @@ return_type KinovaSystem::write(const rclcpp::Time & /*time*/, const rclcpp::Dur
 {
   // ros2_control (Humble) also calls write() on an inactive component.
   if (!active_) {
+    return return_type::OK;
+  }
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  if (!device_) {
     return return_type::OK;
   }
   try {
