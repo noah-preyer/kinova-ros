@@ -290,3 +290,80 @@ TEST_F(KinovaSystemTest, DeactivateSendsOneZeroPoint)
   EXPECT_EQ(sys.fake->lastVelocityCommand().Actuator1, 0.0f);
   EXPECT_EQ(sys.fake->lastFingerCommand().Finger1, 3400.0f);
 }
+
+TEST_F(KinovaSystemTest, ActivateRejectedWhileArmClaimed)
+{
+  ASSERT_NO_FATAL_FAILURE(configure());
+  ASSERT_NO_FATAL_FAILURE(claim(armVelocities()));
+  setCommand(armVelocity(1), 0.1);
+  ASSERT_EQ(sys.on_error(lifecycle_state), CallbackReturn::SUCCESS);
+  ASSERT_EQ(sys.on_configure(lifecycle_state), CallbackReturn::SUCCESS);  // new fake device
+
+  EXPECT_EQ(sys.on_activate(lifecycle_state), CallbackReturn::ERROR);
+
+  setCommand(armVelocity(1), 0.1);
+  ASSERT_EQ(write(), return_type::OK);
+  EXPECT_EQ(sys.fake->rawCalls(), 0);
+}
+
+TEST_F(KinovaSystemTest, ErrorErasesTrajectories)
+{
+  ASSERT_NO_FATAL_FAILURE(configure());
+  ASSERT_NO_FATAL_FAILURE(claim(armVelocities()));
+
+  ASSERT_EQ(sys.on_error(lifecycle_state), CallbackReturn::SUCCESS);
+
+  EXPECT_EQ(sys.fake->raw_velocity_calls, 1);
+  EXPECT_EQ(sys.fake->raw_erase_calls, 1);
+}
+
+TEST_F(KinovaSystemTest, ShutdownFromActiveSendsZeroPoint)
+{
+  ASSERT_NO_FATAL_FAILURE(configure());
+  sys.fake->setFingerTurns(3400, 3400);
+  ASSERT_EQ(sys.on_activate(lifecycle_state), CallbackReturn::SUCCESS);
+  ASSERT_NO_FATAL_FAILURE(claim(armVelocities()));
+  setCommand(armVelocity(1), 0.1);
+  ASSERT_EQ(write(), return_type::OK);
+  ASSERT_EQ(sys.log->velocity_calls, 1);
+
+  // Humble tears the hardware down without on_deactivate (e.g. Ctrl-C mid-motion).
+  ASSERT_EQ(sys.on_shutdown(lifecycle_state), CallbackReturn::SUCCESS);
+
+  EXPECT_EQ(sys.log->velocity_calls, 2);  // exactly one zero point
+  EXPECT_EQ(sys.log->last_velocity.Actuator1, 0.0f);
+  EXPECT_EQ(sys.log->erase_calls, 1);
+}
+
+TEST_F(KinovaSystemTest, ShutdownWhileInactiveSendsNothing)
+{
+  ASSERT_NO_FATAL_FAILURE(configure());
+  ASSERT_EQ(sys.on_deactivate(lifecycle_state), CallbackReturn::SUCCESS);
+  const int velocity_calls = sys.log->velocity_calls;
+
+  ASSERT_EQ(sys.on_shutdown(lifecycle_state), CallbackReturn::SUCCESS);
+
+  EXPECT_EQ(sys.log->velocity_calls, velocity_calls);
+}
+
+TEST(KinovaSystemDestructorTest, DestroyFromActiveSendsZeroPoint)
+{
+  std::shared_ptr<RawCallLog> log;
+  {
+    TestableKinovaSystem sys;
+    log = sys.log;
+    rclcpp_lifecycle::State state;
+    ASSERT_EQ(sys.on_init(parse(makeTestUrdf())), CallbackReturn::SUCCESS);
+    ASSERT_EQ(sys.on_configure(state), CallbackReturn::SUCCESS);
+    auto commands = sys.export_command_interfaces();
+    ASSERT_EQ(sys.on_activate(state), CallbackReturn::SUCCESS);
+    ASSERT_EQ(sys.prepare_command_mode_switch(armVelocities(), {}), return_type::OK);
+    ASSERT_EQ(sys.perform_command_mode_switch(armVelocities(), {}), return_type::OK);
+    commands[0].set_value(0.1);
+    ASSERT_EQ(sys.write(rclcpp::Time(0), rclcpp::Duration::from_seconds(0.01)), return_type::OK);
+    ASSERT_EQ(log->velocity_calls, 1);
+  }
+  EXPECT_EQ(log->velocity_calls, 2);
+  EXPECT_EQ(log->last_velocity.Actuator1, 0.0f);
+  EXPECT_EQ(log->erase_calls, 1);
+}

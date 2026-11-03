@@ -41,8 +41,8 @@ namespace kinova_driver
 /// write() sends nothing unless the component is active (between on_activate and
 /// on_deactivate). Arm velocity is streamed to the arm at every write() while all arm velocity
 /// interfaces are claimed, and one zero-velocity point is sent when they are released. The
-/// finger 1 position
-/// command is applied to every finger.
+/// finger 1 position command is applied to every finger. on_shutdown and the destructor send
+/// one zero point and erase the trajectories if the component is still active.
 ///
 /// With the enable_services hardware parameter (default true), on_configure also starts a node
 /// `<robot_type>_driver` with the services `~/in/home_arm`, `~/in/start` and `~/in/stop`, spun
@@ -65,8 +65,8 @@ public:
     const rclcpp_lifecycle::State & previous_state) override;
   hardware_interface::CallbackReturn on_shutdown(
     const rclcpp_lifecycle::State & previous_state) override;
-  /// Silences write(), zeroes the arm commands and sends one zero point if the device is still
-  /// there. Always succeeds, so the component ends up UNCONFIGURED.
+  /// Silences write(), zeroes the arm commands and sends one zero point (and erases the
+  /// trajectories) if the device is still there. Always succeeds, so the component ends up UNCONFIGURED.
   hardware_interface::CallbackReturn on_error(
     const rclcpp_lifecycle::State & previous_state) override;
 
@@ -116,6 +116,10 @@ private:
   /// with device_mutex_ held. stopServices is safe to call twice.
   bool startServices();
   void stopServices();
+
+  /// If the component is active: clear active_ and, unless the API is stopped, send one
+  /// zero-velocity point and erase all trajectories. Never throws. Caller holds device_mutex_.
+  void stopArmIfActiveLocked() noexcept;
 
   /// Finger targets in turns: target for fingers 1 and 2, and for finger 3 if the hand has one.
   kinova::FingerAngles fingerTargets(double turns) const;

@@ -273,6 +273,31 @@ std::unique_ptr<kinova::KinovaDevice> KinovaSystem::createDevice()
 KinovaSystem::~KinovaSystem()
 {
   stopServices();
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  stopArmIfActiveLocked();
+  device_.reset();
+}
+
+void KinovaSystem::stopArmIfActiveLocked() noexcept
+{
+  // Silence write() first. Humble can tear the hardware down (e.g. Ctrl-C) without calling
+  // on_deactivate, so an active arm gets its zero point and trajectory erase here.
+  const bool was_active = active_.exchange(false);
+  if (!was_active || !device_) {
+    return;
+  }
+  try {
+    if (device_->isStopped()) {
+      return;
+    }
+    device_->setJointVelocitiesWithFingerPositions(
+      AngularInfo{}, fingerTargets(finger_target_turns_));
+    device_->eraseAllTrajectories();
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger(), "Could not stop the Kinova arm on shutdown: %s", e.what());
+  } catch (...) {
+    RCLCPP_ERROR(logger(), "Could not stop the Kinova arm on shutdown");
+  }
 }
 
 bool KinovaSystem::startServices()
@@ -349,6 +374,10 @@ void KinovaSystem::handleHomeArm(
     return;
   }
   try {
+    if (device_->isStopped()) {
+      response->homearm_result = "Rejected: arm stopped (call in/start first)";
+      return;
+    }
     device_->homeArm();
     response->homearm_result = "KINOVA ARM HAS BEEN RETURNED HOME";
   } catch (const std::exception & e) {
@@ -382,6 +411,11 @@ void KinovaSystem::handleStart(
   std::lock_guard<std::mutex> lock(device_mutex_);
   if (!device_) {
     response->start_result = "Rejected: hardware not configured";
+    return;
+  }
+  // Starting with arm_controller active would resume streaming against its pre-stop reference.
+  if (arm_velocity_claimed_) {
+    response->start_result = "Rejected: deactivate arm_controller before starting";
     return;
   }
   try {
@@ -436,6 +470,13 @@ CallbackReturn KinovaSystem::on_configure(const rclcpp_lifecycle::State & /*prev
 
 CallbackReturn KinovaSystem::on_activate(const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  // A claim that survived on_error/on_configure would start streaming the stale reference.
+  if (arm_velocity_claimed_) {
+    RCLCPP_ERROR(
+      logger(), "Could not activate the Kinova arm: arm interfaces still claimed by a "
+      "controller; deactivate it before activating hardware");
+    return CallbackReturn::ERROR;
+  }
   kinova::FingerAngles fingers;
   {
     std::lock_guard<std::mutex> lock(device_mutex_);
@@ -485,9 +526,9 @@ CallbackReturn KinovaSystem::on_cleanup(const rclcpp_lifecycle::State & /*previo
 
 CallbackReturn KinovaSystem::on_shutdown(const rclcpp_lifecycle::State & /*previous_state*/)
 {
-  active_ = false;
   stopServices();
   std::lock_guard<std::mutex> lock(device_mutex_);
+  stopArmIfActiveLocked();
   device_.reset();
   return CallbackReturn::SUCCESS;
 }
@@ -501,6 +542,7 @@ CallbackReturn KinovaSystem::on_error(const rclcpp_lifecycle::State & /*previous
     try {
       device_->setJointVelocitiesWithFingerPositions(
         AngularInfo{}, fingerTargets(finger_target_turns_));
+      device_->eraseAllTrajectories();
     } catch (const std::exception & e) {
       RCLCPP_ERROR(logger(), "Could not stop the Kinova arm after an error: %s", e.what());
     }

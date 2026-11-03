@@ -56,6 +56,15 @@ hardware_interface::HardwareInfo parse(const std::string & urdf)
   return hardware_interface::parse_control_resources_from_urdf(urdf)[0];
 }
 
+/// Raw call counts that outlive the device (the device is destroyed by on_cleanup, on_shutdown
+/// and the KinovaSystem destructor).
+struct RawCallLog
+{
+  int velocity_calls = 0;
+  int erase_calls = 0;
+  AngularInfo last_velocity{};
+};
+
 /// FakeKinovaDevice that also counts every set* call that reaches it, including the calls the
 /// fake ignores (and does not count) while the API is stopped.
 class CountingFakeKinovaDevice : public kinova::FakeKinovaDevice
@@ -68,6 +77,10 @@ public:
   {
     ++raw_velocity_calls;
     last_raw_velocity = joint_vel_deg_s;
+    if (log) {
+      ++log->velocity_calls;
+      log->last_velocity = joint_vel_deg_s;
+    }
     kinova::FakeKinovaDevice::setJointVelocitiesWithFingerPositions(joint_vel_deg_s, fingers_turns);
   }
 
@@ -78,11 +91,22 @@ public:
     kinova::FakeKinovaDevice::setFingerPositions(fingers, timeout, push);
   }
 
+  void eraseAllTrajectories() override
+  {
+    ++raw_erase_calls;
+    if (log) {
+      ++log->erase_calls;
+    }
+    kinova::FakeKinovaDevice::eraseAllTrajectories();
+  }
+
   int rawCalls() const {return raw_velocity_calls + raw_finger_calls;}
 
   int raw_velocity_calls = 0;
   int raw_finger_calls = 0;
+  int raw_erase_calls = 0;
   AngularInfo last_raw_velocity{};
+  std::shared_ptr<RawCallLog> log;
 };
 
 /// KinovaSystem on a CountingFakeKinovaDevice that runs on a manual clock (t, in seconds).
@@ -93,6 +117,8 @@ public:
   bool throw_on_create = false;
   double t = 0.0;
   CountingFakeKinovaDevice * fake = nullptr;
+  /// Shared with every device this system creates; still valid after the device is gone.
+  std::shared_ptr<RawCallLog> log = std::make_shared<RawCallLog>();
 
   bool armVelocityClaimed() const {return arm_velocity_claimed_;}
 
@@ -103,6 +129,7 @@ protected:
       throw kinova::KinovaCommException("no arm", 1);
     }
     auto device = std::make_unique<CountingFakeKinovaDevice>(initial_deg, [this] {return t;});
+    device->log = log;
     fake = device.get();
     return device;
   }

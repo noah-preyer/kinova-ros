@@ -52,8 +52,30 @@ TEST_F(KinovaSystemServicesTest, HomeRejectedWhileArmClaimed)
   ASSERT_NO_FATAL_FAILURE(configureWithServices());
   claim(armVelocities());
 
-  EXPECT_EQ(home().rfind("Rejected", 0), 0u);
+  EXPECT_EQ(home(), "Rejected: deactivate arm_controller before homing");
   EXPECT_EQ(sys.fake->homeCount(), 0);
+}
+
+TEST_F(KinovaSystemServicesTest, HomeRejectedWhileStopped)
+{
+  ASSERT_NO_FATAL_FAILURE(configureWithServices());
+  EXPECT_EQ(stop(), "Arm stopped");
+
+  EXPECT_EQ(home(), "Rejected: arm stopped (call in/start first)");
+  EXPECT_EQ(sys.fake->homeCount(), 0);
+}
+
+TEST_F(KinovaSystemServicesTest, StartRejectedWhileArmClaimed)
+{
+  ASSERT_NO_FATAL_FAILURE(configureWithServices());
+  claim(armVelocities());
+  EXPECT_EQ(stop(), "Arm stopped");
+
+  EXPECT_EQ(start(), "Rejected: deactivate arm_controller before starting");
+  EXPECT_TRUE(sys.fake->isStopped());
+  setCommand(armVelocity(1), 0.1);
+  ASSERT_EQ(write(), return_type::OK);
+  EXPECT_EQ(sys.fake->rawCalls(), 0);
 }
 
 TEST_F(KinovaSystemServicesTest, HomeAcceptedWhenIdle)
@@ -74,9 +96,14 @@ TEST_F(KinovaSystemServicesTest, WriteSilentAfterStopService)
   ASSERT_EQ(write(), return_type::OK);
   EXPECT_EQ(sys.fake->velocityCommandCount(), 0);
 
+  // in/start is only accepted with the arm released; reclaiming resumes streaming.
+  release(armVelocities());
   EXPECT_EQ(start(), "Arm started");
+  claim(armVelocities());
+  setCommand(armVelocity(1), 0.1);
   ASSERT_EQ(write(), return_type::OK);
   EXPECT_EQ(sys.fake->velocityCommandCount(), 1);
+  EXPECT_GT(sys.fake->lastVelocityCommand().Actuator1, 0.0f);
 }
 
 TEST_F(KinovaSystemServicesTest, HandlersToleratePreConfigure)
