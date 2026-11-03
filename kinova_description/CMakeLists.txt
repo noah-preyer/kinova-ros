@@ -1,12 +1,17 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.8)
 project(kinova_description)
 
-find_package(catkin REQUIRED)
+find_package(ament_cmake REQUIRED)
 
-catkin_package()
-
-install(DIRECTORY urdf DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+install(DIRECTORY urdf DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY meshes
-   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-   FILES_MATCHING PATTERN "*.dae"
- )
+  DESTINATION share/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.dae"
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_j2n6s200_xacro test/test_j2n6s200_xacro.py)
+endif()
+
+ament_package()

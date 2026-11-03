@@ -17,7 +17,12 @@
 	xmlns:xacro="http://www.ros.org/wiki/xacro" name="j2n6s200">
 
 
+  <xacro:arg name="use_fake_hardware" default="true"/>
+  <xacro:arg name="serial_number" default="not_set"/>
+  <xacro:arg name="connection_type" default="USB"/>
+
   <xacro:include filename="$(find kinova_description)/urdf/j2n6s200.xacro"/>
+  <xacro:include filename="$(find kinova_description)/urdf/kinova.ros2_control.xacro"/>
 
   <link name="root"/>
 
@@ -33,5 +38,10 @@
   <xacro:property name="robot_root" value="root" />
 
   <xacro:j2n6s200  base_parent="${robot_root}"/>
+
+  <xacro:kinova_ros2_control prefix="j2n6s200" robot_type="j2n6s200"
+                             use_fake_hardware="$(arg use_fake_hardware)"
+                             serial_number="$(arg serial_number)"
+                             connection_type="$(arg connection_type)"/>
 
 </robot>
