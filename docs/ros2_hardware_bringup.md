@@ -84,7 +84,16 @@ With `arm_controller` active:
 ros2 service call /j2n6s200_driver/in/home_arm kinova_msgs/srv/HomeArm
 ```
 
-Pass: the result starts with `Rejected`. After `ros2 control set_controller_state arm_controller inactive`, the same call homes the arm.
+Pass: the result starts with `Rejected`. After `ros2 control set_controller_state arm_controller inactive`, the same call homes the arm. Wait for homing to finish (arm at rest) before reactivating `arm_controller`.
+
+Then, with `arm_controller` active, call `in/stop` and then `in/start`:
+
+```bash
+ros2 service call /j2n6s200_driver/in/stop kinova_msgs/srv/Stop
+ros2 service call /j2n6s200_driver/in/start kinova_msgs/srv/Start
+```
+
+Pass: `start` returns `Rejected: deactivate arm_controller before starting` and the arm does not move. Deactivate `arm_controller`, call `in/start` again (`Arm started`), then reactivate `arm_controller`: the arm stays where it is.
 
 ## 8. Grasp stall
 
@@ -94,7 +103,7 @@ Put an object about 3 cm wide between the fingers and close the gripper on it:
 ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 1.2, max_effort: 0.0}}"
 ```
 
-Pass: the result has `stalled: true` and the goal is not aborted.
+Pass: the result has `stalled: true`, the goal is not aborted, and the arm itself does not move.
 
 ## 9. MoveIt
 
@@ -112,6 +121,17 @@ Unplug USB while the driver is idle.
 
 Pass: `read` logs an error and the process does not crash. Re-plug and restart the launch: normal operation resumes.
 
+## 11. Ctrl-C mid-motion
+
+```bash
+python3 docs/arm_goal.py --joint 6 --delta 0.35 --duration 4 &
+sleep 2
+```
+
+Then press Ctrl-C in the terminal running `kinova_robot.launch.py`.
+
+Pass: the arm stops within 0.2 s and does not creep afterwards.
+
 ## Without hardware
 
-`ros2 launch kinova_bringup kinova_robot.launch.py use_fake_hardware:=true` runs the same stack on a simulated device, useful to rehearse checks 2, 4, 5, 6, 7 and 9 (not 1, 3, 8, 10).
+`ros2 launch kinova_bringup kinova_robot.launch.py use_fake_hardware:=true` runs the same stack on a simulated device, useful to rehearse checks 2, 4, 5, 6, 7 and 9 (not 1, 3, 8, 10, 11).

@@ -81,7 +81,7 @@ ros2 service call /j2n6s200_driver/in/stop kinova_msgs/srv/Stop
 ros2 service call /j2n6s200_driver/in/start kinova_msgs/srv/Start
 ```
 
-`home_arm` is rejected while `arm_controller` is active. Deactivate it first:
+`home_arm` and `start` are rejected while `arm_controller` is active, and `home_arm` is also rejected after `stop` until `start` is called. Deactivate `arm_controller` first:
 
 ```bash
 ros2 control set_controller_state arm_controller inactive
@@ -89,6 +89,8 @@ ros2 control set_controller_state arm_controller inactive
 ros2 service call /controller_manager/switch_controller controller_manager_msgs/srv/SwitchController \
   "{deactivate_controllers: [arm_controller], strictness: 2}"
 ```
+
+After `home_arm`, wait for homing to finish (the arm at rest) before reactivating `arm_controller`. After `stop`, call `start` with `arm_controller` inactive, then reactivate it: it then holds the arm where it is instead of snapping back to its pre-stop reference.
 
 MoveIt 2 (starts the driver stack with `move_group` and RViz):
 
