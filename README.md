@@ -12,7 +12,7 @@ This branch targets **ROS 2 Humble** (Ubuntu 22.04) and the `j2n6s200` arm only.
 
 The ROS 1 stack lives on other branches and is unchanged there. Use one of these for ROS 1 (catkin, roslaunch, rosrun, rostopic, rosservice):
 
-- [noetic-devel / master](https://github.com/Kinovarobotics/kinova-ros) for ROS Noetic
+- [noetic-devel](https://github.com/Kinovarobotics/kinova-ros/tree/noetic-devel) for ROS Noetic
 - [melodic-devel](https://github.com/Kinovarobotics/kinova-ros/tree/melodic-devel) for ROS Melodic
 - [kinetic-devel](https://github.com/Kinovarobotics/kinova-ros/tree/kinetic-devel) and [indigo-devel](https://github.com/Kinovarobotics/kinova-ros/tree/indigo-devel), no longer maintained
 

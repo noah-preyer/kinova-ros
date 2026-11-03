@@ -22,34 +22,43 @@ ros2 launch kinova_bringup kinova_robot.launch.py
 ros2 control list_controllers      # second terminal
 ```
 
+Wait until the launch log shows the three spawners have loaded and activated their controllers before querying `controller_manager`.
+
 Pass: the log contains `Found 1 device(s), using device at index 0`, and `list_controllers` shows 3 controllers, all `active`.
 
 ## 3. Joint angles
 
 ```bash
-ros2 topic echo /joint_states
+python3 -c "
+import rclpy, math
+from sensor_msgs.msg import JointState
+rclpy.init(); n = rclpy.create_node('j')
+def cb(m):
+    print(sorted((k[-7:], round(math.degrees(p), 2)) for k, p in zip(m.name, m.position) if 'joint_' in k and 'finger' not in k)); raise SystemExit
+n.create_subscription(JointState, '/joint_states', cb, 10)
+try: rclpy.spin(n)
+except SystemExit: pass
+"
 ```
 
-Pass: `j2n6s200_joint_1` to `_6` (rad, convert to deg) match the angles JacoSoft or the Kinova SDK show, within 0.5 deg.
+Pass: `joint_1` to `joint_6` (printed in deg) match the angles JacoSoft or the Kinova SDK show, within 0.5 deg.
 
 ## 4. Velocity scale
 
-Send a `FollowJointTrajectory` goal moving `j2n6s200_joint_6` by +0.35 rad over 2 s, for example:
+`docs/arm_goal.py` reads the current `/joint_states`, sends a `FollowJointTrajectory` goal that moves one joint relative to where it is, and prints the peak reported velocity:
 
 ```bash
-ros2 action send_goal /arm_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory \
-  "{trajectory: {joint_names: [j2n6s200_joint_1, j2n6s200_joint_2, j2n6s200_joint_3, j2n6s200_joint_4, j2n6s200_joint_5, j2n6s200_joint_6], points: [{positions: [<current j1..j5>, <current j6 + 0.35>], time_from_start: {sec: 2}}]}}"
+python3 docs/arm_goal.py --joint 6 --delta 0.35 --duration 2
 ```
 
-Fill the positions from `/joint_states` (all joints hold their current value except joint_6). Record `/joint_states` during the move.
-
-Pass: peak reported `velocity` of joint_6 equals Delta position / Delta t within 10%. A factor of about 2 means the x2 in `KinovaComm::getJointVelocities` is wrong for this firmware. Stop and report it.
+Pass: the peak joint_6 velocity equals Delta position / Delta t (0.35 / 2 = 0.175 rad/s) within 10%. A factor of about 2 means the x2 in `KinovaComm::getJointVelocities` is wrong for this firmware. Stop and report it.
 
 ## 5. Fingers during arm motion
 
-Send an arm goal (as in check 4) and a gripper goal together:
+Send an arm goal and a gripper goal together:
 
 ```bash
+python3 docs/arm_goal.py --joint 6 --delta 0.35 --duration 4 &
 ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 0.7, max_effort: 0.0}}"
 ```
 
@@ -57,11 +66,13 @@ Pass: both the arm and the fingers move. If the fingers stay still, `ANGULAR_VEL
 
 ## 6. Stop mid-motion
 
-Start a 4 s arm move, then:
-
 ```bash
+python3 docs/arm_goal.py --joint 6 --delta 0.35 --duration 4 &
+sleep 2
 ros2 control set_controller_state arm_controller inactive
 ```
+
+(Without the CLI: `ros2 service call /controller_manager/switch_controller controller_manager_msgs/srv/SwitchController "{deactivate_controllers: [arm_controller], strictness: 2}"`.) Reactivate afterwards with `ros2 control set_controller_state arm_controller active`.
 
 Pass: the arm stops within 0.2 s and does not creep afterwards.
 
@@ -77,7 +88,11 @@ Pass: the result starts with `Rejected`. After `ros2 control set_controller_stat
 
 ## 8. Grasp stall
 
-Close the gripper on an object about 3 cm wide (`gripper_cmd` as in check 5 with a closing position).
+Put an object about 3 cm wide between the fingers and close the gripper on it:
+
+```bash
+ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 1.2, max_effort: 0.0}}"
+```
 
 Pass: the result has `stalled: true` and the goal is not aborted.
 
