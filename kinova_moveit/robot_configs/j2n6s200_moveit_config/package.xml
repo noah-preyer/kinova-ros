@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>j2n6s200_moveit_config</name>
+  <version>0.0.1</version>
+  <description>
+      MoveIt 2 configuration (SRDF, kinematics, limits, controllers, OMPL) and
+      move_group launch for the Kinova j2n6s200 arm.
+  </description>
+  <maintainer email="support@kinova.ca">Kinova Support</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>moveit_kinematics</exec_depend>
+  <exec_depend>moveit_planners_ompl</exec_depend>
+  <exec_depend>moveit_simple_controller_manager</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>moveit_ros_visualization</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>kinova_bringup</exec_depend>
+  <exec_depend>kinova_description</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>moveit_msgs</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>control_msgs</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+  <test_depend>xacro</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
