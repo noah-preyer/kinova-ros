@@ -1,0 +1,37 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    joint_state_broadcaster: {type: joint_state_broadcaster/JointStateBroadcaster}
+    arm_controller: {type: joint_trajectory_controller/JointTrajectoryController}
+    gripper_controller: {type: position_controllers/GripperActionController}
+arm_controller:
+  ros__parameters:
+    joints: [j2n6s200_joint_1, j2n6s200_joint_2, j2n6s200_joint_3, j2n6s200_joint_4, j2n6s200_joint_5, j2n6s200_joint_6]
+    command_interfaces: [velocity]
+    state_interfaces: [position, velocity]
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    constraints:
+      stopped_velocity_tolerance: 0.02
+      goal_time: 1.0
+      j2n6s200_joint_1: {trajectory: 0.1, goal: 0.02}
+      j2n6s200_joint_2: {trajectory: 0.1, goal: 0.02}
+      j2n6s200_joint_3: {trajectory: 0.1, goal: 0.02}
+      j2n6s200_joint_4: {trajectory: 0.1, goal: 0.02}
+      j2n6s200_joint_5: {trajectory: 0.1, goal: 0.02}
+      j2n6s200_joint_6: {trajectory: 0.1, goal: 0.02}
+    gains:
+      j2n6s200_joint_1: {p: 5.0, i: 0.0, d: 0.0, i_clamp: 0.0, ff_velocity_scale: 1.0, angle_wraparound: true}
+      j2n6s200_joint_2: {p: 5.0, i: 0.0, d: 0.0, i_clamp: 0.0, ff_velocity_scale: 1.0, angle_wraparound: false}
+      j2n6s200_joint_3: {p: 5.0, i: 0.0, d: 0.0, i_clamp: 0.0, ff_velocity_scale: 1.0, angle_wraparound: false}
+      j2n6s200_joint_4: {p: 5.0, i: 0.0, d: 0.0, i_clamp: 0.0, ff_velocity_scale: 1.0, angle_wraparound: true}
+      j2n6s200_joint_5: {p: 5.0, i: 0.0, d: 0.0, i_clamp: 0.0, ff_velocity_scale: 1.0, angle_wraparound: true}
+      j2n6s200_joint_6: {p: 5.0, i: 0.0, d: 0.0, i_clamp: 0.0, ff_velocity_scale: 1.0, angle_wraparound: true}
+gripper_controller:
+  ros__parameters:
+    joint: j2n6s200_joint_finger_1
+    action_monitor_rate: 20.0
+    goal_tolerance: 0.02
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0
