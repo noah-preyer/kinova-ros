@@ -1,0 +1,10 @@
+<library path="kinova_system">
+  <class name="kinova_driver/KinovaSystem"
+         type="kinova_driver::KinovaSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control system interface for Kinova JACO2 arms: joint velocity commands for the arm,
+      a position command for the fingers.
+    </description>
+  </class>
+</library>

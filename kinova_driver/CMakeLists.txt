@@ -16,6 +16,9 @@ find_package(kinova_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(hardware_interface REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 
 ###########
 ## Build ##
@@ -40,11 +43,25 @@ ament_target_dependencies(kinova_driver_core PUBLIC
 )
 target_link_libraries(kinova_driver_core PUBLIC dl)
 
+# ros2_control hardware interface plugin (kinova_driver/KinovaSystem).
+add_library(kinova_system SHARED
+  src/kinova_system.cpp
+)
+target_link_libraries(kinova_system PUBLIC kinova_driver_core)
+ament_target_dependencies(kinova_system PUBLIC
+  ament_index_cpp
+  hardware_interface
+  pluginlib
+  rclcpp
+  rclcpp_lifecycle
+)
+pluginlib_export_plugin_description_file(hardware_interface kinova_driver_plugins.xml)
+
 #############
 ## Install ##
 #############
 
-install(TARGETS kinova_driver_core
+install(TARGETS kinova_driver_core kinova_system
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -61,6 +78,7 @@ install(FILES
   include/kinova_driver/kinova_comm_config.hpp
   include/kinova_driver/kinova_device.hpp
   include/kinova_driver/kinova_ros_types.h
+  include/kinova_driver/kinova_system.hpp
   DESTINATION include/kinova_driver
 )
 install(DIRECTORY include/kinova/
@@ -99,8 +117,16 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_fake_kinova_device test/test_fake_kinova_device.cpp)
   target_link_libraries(test_fake_kinova_device kinova_driver_core)
+
+  ament_add_gtest(test_kinova_system test/test_kinova_system.cpp)
+  target_link_libraries(test_kinova_system kinova_system)
+
+  # Loads the installed plugin through pluginlib; does not link kinova_system.
+  ament_add_gtest(test_load_kinova_system test/test_load_kinova_system.cpp)
+  ament_target_dependencies(test_load_kinova_system hardware_interface pluginlib)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp kinova_msgs geometry_msgs tf2)
+ament_export_dependencies(
+  rclcpp kinova_msgs geometry_msgs tf2 ament_index_cpp hardware_interface pluginlib rclcpp_lifecycle)
 ament_package()
