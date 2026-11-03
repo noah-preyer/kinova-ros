@@ -50,14 +50,43 @@ hardware_interface::HardwareInfo parse(const std::string & urdf)
   return hardware_interface::parse_control_resources_from_urdf(urdf)[0];
 }
 
-/// KinovaSystem on a FakeKinovaDevice that runs on a manual clock (t, in seconds).
+/// FakeKinovaDevice that also counts every set* call that reaches it, including the calls the
+/// fake ignores (and does not count) while the API is stopped.
+class CountingFakeKinovaDevice : public kinova::FakeKinovaDevice
+{
+public:
+  using kinova::FakeKinovaDevice::FakeKinovaDevice;
+
+  void setJointVelocitiesWithFingerPositions(
+    const AngularInfo & joint_vel_deg_s, const kinova::FingerAngles & fingers_turns) override
+  {
+    ++raw_velocity_calls;
+    last_raw_velocity = joint_vel_deg_s;
+    kinova::FakeKinovaDevice::setJointVelocitiesWithFingerPositions(joint_vel_deg_s, fingers_turns);
+  }
+
+  void setFingerPositions(
+    const kinova::FingerAngles & fingers, int timeout = 0, bool push = true) override
+  {
+    ++raw_finger_calls;
+    kinova::FakeKinovaDevice::setFingerPositions(fingers, timeout, push);
+  }
+
+  int rawCalls() const {return raw_velocity_calls + raw_finger_calls;}
+
+  int raw_velocity_calls = 0;
+  int raw_finger_calls = 0;
+  AngularInfo last_raw_velocity{};
+};
+
+/// KinovaSystem on a CountingFakeKinovaDevice that runs on a manual clock (t, in seconds).
 class TestableKinovaSystem : public kinova_driver::KinovaSystem
 {
 public:
   std::array<double, 6> initial_deg = kinova::kFakeHomeDeg;
   bool throw_on_create = false;
   double t = 0.0;
-  kinova::FakeKinovaDevice * fake = nullptr;
+  CountingFakeKinovaDevice * fake = nullptr;
 
   bool armVelocityClaimed() const {return arm_velocity_claimed_;}
 
@@ -67,7 +96,7 @@ protected:
     if (throw_on_create) {
       throw kinova::KinovaCommException("no arm", 1);
     }
-    auto device = std::make_unique<kinova::FakeKinovaDevice>(initial_deg, [this] {return t;});
+    auto device = std::make_unique<CountingFakeKinovaDevice>(initial_deg, [this] {return t;});
     fake = device.get();
     return device;
   }
@@ -384,6 +413,24 @@ TEST_F(KinovaSystemTest, WriteSilentWhileStopped)
   ASSERT_EQ(write(), return_type::OK);
 
   EXPECT_EQ(sys.fake->velocityCommandCount(), 0);
+  EXPECT_EQ(sys.fake->rawCalls(), 0);
+}
+
+TEST_F(KinovaSystemTest, WriteSilentWhileInactive)
+{
+  ASSERT_NO_FATAL_FAILURE(configure());
+  ASSERT_NO_FATAL_FAILURE(claim(armVelocities()));
+  setCommand(armVelocity(1), 0.1);
+
+  ASSERT_EQ(sys.on_deactivate(lifecycle_state), CallbackReturn::SUCCESS);
+  ASSERT_EQ(sys.fake->raw_velocity_calls, 1);
+  EXPECT_EQ(sys.fake->raw_finger_calls, 0);
+  EXPECT_EQ(sys.fake->last_raw_velocity.Actuator1, 0.0f);
+
+  ASSERT_EQ(write(), return_type::OK);
+
+  EXPECT_EQ(sys.fake->raw_velocity_calls, 1);
+  EXPECT_EQ(sys.fake->raw_finger_calls, 0);
 }
 
 TEST_F(KinovaSystemTest, DeactivateSendsOneZeroPoint)

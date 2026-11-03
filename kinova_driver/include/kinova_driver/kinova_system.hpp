@@ -30,8 +30,10 @@ namespace kinova_driver
 /// (`..joint_finger_tip_<k>`, state {position}). dof and the finger count come from the
 /// robot_type hardware parameter.
 ///
-/// Arm velocity is streamed to the arm at every write() while all arm velocity interfaces are
-/// claimed, and one zero-velocity point is sent when they are released. The finger 1 position
+/// write() sends nothing unless the component is active (between on_activate and
+/// on_deactivate). Arm velocity is streamed to the arm at every write() while all arm velocity
+/// interfaces are claimed, and one zero-velocity point is sent when they are released. The
+/// finger 1 position
 /// command is applied to every finger.
 class KinovaSystem : public hardware_interface::SystemInterface
 {
@@ -113,6 +115,9 @@ private:
   bool finger_claimed_ = false;
   /// Set when the arm velocity interfaces are released; write() then sends one zero point.
   bool send_zero_once_ = false;
+  /// True from the end of a successful on_activate to the start of on_deactivate, on_cleanup
+  /// or on_shutdown. write() sends nothing while it is false.
+  std::atomic<bool> active_{false};
 
   /// Finger target in turns: the measured position at on_activate, then the clamped command.
   double finger_target_turns_ = 0.0;

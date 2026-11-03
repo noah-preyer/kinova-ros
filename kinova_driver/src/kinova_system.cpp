@@ -306,11 +306,14 @@ CallbackReturn KinovaSystem::on_activate(const rclcpp_lifecycle::State & /*previ
   finger_target_turns_ = fingers.Finger1;
   last_sent_finger_turns_ = finger_target_turns_;
   finger_position_command_ = fingerTurnsToRad(finger_target_turns_);
+  active_ = true;
   return CallbackReturn::SUCCESS;
 }
 
 CallbackReturn KinovaSystem::on_deactivate(const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  // Silence write() first. The zero point below goes to the device directly.
+  active_ = false;
   try {
     device_->setJointVelocitiesWithFingerPositions(
       AngularInfo{}, fingerTargets(finger_target_turns_));
@@ -325,12 +328,14 @@ CallbackReturn KinovaSystem::on_deactivate(const rclcpp_lifecycle::State & /*pre
 
 CallbackReturn KinovaSystem::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  active_ = false;
   device_.reset();
   return CallbackReturn::SUCCESS;
 }
 
 CallbackReturn KinovaSystem::on_shutdown(const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  active_ = false;
   device_.reset();
   return CallbackReturn::SUCCESS;
 }
@@ -458,6 +463,10 @@ return_type KinovaSystem::read(const rclcpp::Time & /*time*/, const rclcpp::Dura
 
 return_type KinovaSystem::write(const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
+  // ros2_control (Humble) also calls write() on an inactive component.
+  if (!active_) {
+    return return_type::OK;
+  }
   try {
     if (device_->isStopped()) {
       return return_type::OK;
