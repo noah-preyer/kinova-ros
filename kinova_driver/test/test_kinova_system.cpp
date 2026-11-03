@@ -433,6 +433,25 @@ TEST_F(KinovaSystemTest, WriteSilentWhileInactive)
   EXPECT_EQ(sys.fake->raw_finger_calls, 0);
 }
 
+TEST_F(KinovaSystemTest, WriteSilentAfterErrorAndReconfigure)
+{
+  ASSERT_NO_FATAL_FAILURE(configure());
+  ASSERT_NO_FATAL_FAILURE(claim(armVelocities()));
+  setCommand(armVelocity(1), 0.1);
+
+  ASSERT_EQ(sys.on_error(lifecycle_state), CallbackReturn::SUCCESS);
+  EXPECT_EQ(sys.fake->raw_velocity_calls, 1);  // best-effort zero point
+  EXPECT_EQ(sys.fake->last_raw_velocity.Actuator1, 0.0f);
+  EXPECT_EQ(commands.at(armVelocity(1)).get_value(), 0.0);
+
+  // The arm is still claimed, but the component is only INACTIVE after on_configure.
+  ASSERT_EQ(sys.on_configure(lifecycle_state), CallbackReturn::SUCCESS);  // new fake device
+  setCommand(armVelocity(1), 0.1);
+  ASSERT_EQ(write(), return_type::OK);
+
+  EXPECT_EQ(sys.fake->rawCalls(), 0);
+}
+
 TEST_F(KinovaSystemTest, DeactivateSendsOneZeroPoint)
 {
   ASSERT_NO_FATAL_FAILURE(configure());

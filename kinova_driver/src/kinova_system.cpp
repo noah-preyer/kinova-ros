@@ -270,6 +270,9 @@ std::unique_ptr<kinova::KinovaDevice> KinovaSystem::createDevice()
 
 CallbackReturn KinovaSystem::on_configure(const rclcpp_lifecycle::State & /*previous_state*/)
 {
+  // After an error the component is reconfigured without on_deactivate; stay silent until
+  // on_activate.
+  active_ = false;
   // Only one connection to the arm at a time: the old device closes the API when destroyed.
   device_.reset();
   try {
@@ -337,6 +340,21 @@ CallbackReturn KinovaSystem::on_shutdown(const rclcpp_lifecycle::State & /*previ
 {
   active_ = false;
   device_.reset();
+  return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn KinovaSystem::on_error(const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  active_ = false;
+  std::fill(arm_velocity_command_.begin(), arm_velocity_command_.end(), 0.0);
+  if (device_) {
+    try {
+      device_->setJointVelocitiesWithFingerPositions(
+        AngularInfo{}, fingerTargets(finger_target_turns_));
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(logger(), "Could not stop the Kinova arm after an error: %s", e.what());
+    }
+  }
   return CallbackReturn::SUCCESS;
 }
 

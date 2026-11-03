@@ -50,6 +50,10 @@ public:
     const rclcpp_lifecycle::State & previous_state) override;
   hardware_interface::CallbackReturn on_shutdown(
     const rclcpp_lifecycle::State & previous_state) override;
+  /// Silences write(), zeroes the arm commands and sends one zero point if the device is still
+  /// there. Always succeeds, so the component ends up UNCONFIGURED.
+  hardware_interface::CallbackReturn on_error(
+    const rclcpp_lifecycle::State & previous_state) override;
 
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
   std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
@@ -115,8 +119,8 @@ private:
   bool finger_claimed_ = false;
   /// Set when the arm velocity interfaces are released; write() then sends one zero point.
   bool send_zero_once_ = false;
-  /// True from the end of a successful on_activate to the start of on_deactivate, on_cleanup
-  /// or on_shutdown. write() sends nothing while it is false.
+  /// True from the end of a successful on_activate to the start of on_configure,
+  /// on_deactivate, on_cleanup, on_shutdown or on_error. write() sends nothing while it is false.
   std::atomic<bool> active_{false};
 
   /// Finger target in turns: the measured position at on_activate, then the clamped command.
